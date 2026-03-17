@@ -1,0 +1,6 @@
+@client{
+  js{
+    function x( { return 1; }
+  };
+}
+

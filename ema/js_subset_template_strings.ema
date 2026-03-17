@@ -1,0 +1,10 @@
+@client{
+  state name = "Ema";
+  state n = 2;
+
+  js{
+    console.log(`Hello ${name}`);
+    console.log(`n+1=${n + 1}`);
+  };
+}
+

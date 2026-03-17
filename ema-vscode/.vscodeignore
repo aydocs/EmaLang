@@ -1,0 +1,11 @@
+node_modules/**
+src/**
+**/*.ts
+tsconfig.json
+*.map
+.gitignore
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+package-lock.json
+

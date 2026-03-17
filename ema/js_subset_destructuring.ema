@@ -1,0 +1,8 @@
+@client{
+  js{
+    const {a, b: bb, ...rest} = { a: 1, b: 2, c: 3 };
+    const [x, , y, ...tail] = [10, 11, 12, 13];
+    console.log(a, bb, rest, x, y, tail);
+  };
+}
+

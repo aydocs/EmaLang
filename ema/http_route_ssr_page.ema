@@ -1,0 +1,31 @@
+model User {
+    name: str
+}
+
+@server {
+    // Route returns only BODY (SSR fragment); runtime wraps it with EMA shell if content-type is text/html.
+    std::http::route("GET", "/dashboard",
+        php <<<PHP
+$name = $_GET_name;
+if ($name == "") { $name = "guest"; }
+echo "<div style='padding:24px;font-family:system-ui'>";
+echo "<h1>Dashboard</h1>";
+echo "<p>Hello " . $name . "</p>";
+echo "</div>";
+PHP
+        ,
+        200,
+        "text/html; charset=utf-8"
+    );
+
+    std::http::serve(8080);
+}
+
+@client {
+    // client still controls styling/behavior if you also embed css/js/html
+    css <<<CSS
+    #ema-root h1 { color: #2563eb; }
+CSS
+    ;
+}
+

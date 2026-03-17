@@ -1,0 +1,31 @@
+@server {
+    php <<<PHP
+echo "PHP heredoc block!";
+$x = 42;
+echo $x;
+PHP
+    ;
+}
+
+@client {
+    css <<<CSS
+body { margin: 0; background: #111827; color: #e5e7eb; }
+#root { padding: 24px; }
+CSS
+    ;
+
+    html <<<HTML
+<div id="root">
+  <h1>EMA Heredoc</h1>
+  <button id="b">Click</button>
+</div>
+HTML
+    ;
+
+    js <<<JS
+console.log("[EMA] heredoc js running");
+document.getElementById("b")?.addEventListener("click", () => alert("OK"));
+JS
+    ;
+}
+

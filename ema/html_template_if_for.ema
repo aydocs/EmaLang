@@ -1,0 +1,26 @@
+@server{
+  std::http::serve(8088);
+}
+
+@client{
+  state show = true;
+  state items = 3;
+
+  html{
+    <div>
+      <p>Computed: {{ items + 1 }}</p>
+      {% if show %}
+        <h2>Visible</h2>
+      {% else %}
+        <h2>Hidden</h2>
+      {% endif %}
+
+      <ul>
+        {% for i in items %}
+          <li>Item {{ i }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  };
+}
+

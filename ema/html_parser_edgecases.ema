@@ -1,0 +1,21 @@
+@server{
+  std::http::serve(8087);
+}
+
+@client{
+  html{
+    <div>
+      <img src="x" />
+      <br>
+      <input disabled>
+      <style>
+        .x { color: red; }
+      </style>
+      <script>
+        console.log("raw <tag> not parsed");
+      </script>
+      <p>&lt;escaped&gt;</p>
+    </div>
+  };
+}
+

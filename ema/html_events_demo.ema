@@ -1,0 +1,20 @@
+@server{
+  std::http::serve(8089);
+}
+
+@client{
+  state name = "World";
+  state counter = 0;
+
+  html{
+    <div>
+      <h2>Hello {{ name }}</h2>
+      <input value="{{ name }}" oninput="set(name, value)">
+      <button onclick="inc(counter)">Inc</button>
+      <button onclick="dec(counter)">Dec</button>
+      <p>Counter = {{ counter }}</p>
+      <p>Computed counter+1 = {{ counter + 1 }}</p>
+    </div>
+  };
+}
+

@@ -1,0 +1,10 @@
+@client {
+    state sayi = 10;
+    <div style: "padding: 20px">
+        "Sayi: " {{ sayi }}
+    </div>;
+}
+
+@server {
+    print "Server SSR logic running...";
+}

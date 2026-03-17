@@ -1,0 +1,208 @@
+model Customer {
+  email: str
+  name: str
+}
+
+model Product {
+  name: str
+  price: int
+}
+
+model OrderRow {
+  customer_email: str
+  items_json: str
+  total: int
+}
+
+@server {
+  // Seed products (idempotent demo: ok if duplicates happen in ema.db during dev)
+  Product::insert("Ema Hoodie", 1499);
+  Product::insert("Ema Sticker Pack", 199);
+  Product::insert("Ema Mug", 699);
+
+  // Page shell (SSR-first): we only hydrate server state; UI comes from @client SSR.
+  std::http::route("GET", "/", php{
+hydrate("page", "shop");
+}, 200, "text/html; charset=utf-8");
+
+  // JSON API: list products
+  std::http::route("GET", "/api/products", php{
+echo db_all("Product");
+}, 200, "application/json; charset=utf-8");
+
+  // Register customer (form: email, name)
+  std::http::route("POST", "/api/register", php{
+$email = $_POST_email;
+$name = $_POST_name;
+if ($email == "") { echo json_object("ok", false, "error", "email required"); return; }
+db_insert("Customer", $email, $name);
+hydrate("customer_email", $email);
+hydrate("customer_name", $name);
+echo json_object("ok", true);
+}, 200, "application/json; charset=utf-8");
+
+  // Place order (JSON: email, items_json, total)
+  std::http::route("POST", "/api/order", php{
+$email = $_JSON_email;
+$items = $_JSON_items_json;
+$total = int($_JSON_total);
+if ($email == "") { echo json_object("ok", false, "error", "email required"); return; }
+db_insert("OrderRow", $email, $items, $total);
+echo json_object("ok", true);
+}, 200, "application/json; charset=utf-8");
+
+  std::http::serve(8080);
+}
+
+@client {
+  state customer_email = "";
+  state customer_name = "";
+  state cart_total = 0;
+
+  <div style: "padding:28px;font-family:system-ui;max-width:900px;margin:0 auto">
+    <h1 style: "margin:0 0 8px 0"> "EmaShop" </h1>
+    <p style: "margin:0 0 18px 0;opacity:0.7"> "Mini e-commerce demo (EMA + SQLite + SSR + Hydration)" </p>
+
+    <div style: "display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap">
+      <div style: "flex:1;min-width:320px;padding:16px;border:1px solid rgba(0,0,0,0.12);border-radius:14px">
+        <h2 style: "margin:0 0 10px 0"> "Products" </h2>
+        html {
+<div id="products"></div>
+        }
+      </div>
+
+      <div style: "width:320px;min-width:280px;padding:16px;border:1px solid rgba(0,0,0,0.12);border-radius:14px">
+        <h2 style: "margin:0 0 10px 0"> "Cart" </h2>
+        <p style: "margin:0 0 10px 0"> "Total: " {{ cart_total }} " (cents)" </p>
+        <button onclick: "window.__EMA_CHECKOUT__ && window.__EMA_CHECKOUT__()"> "Checkout" </button>
+        <div style: "height:12px"></div>
+        <h3 style: "margin:0 0 10px 0"> "Customer" </h3>
+        html {
+<form id="reg" style="display:flex;flex-direction:column;gap:10px">
+  <input name="email" placeholder="email" />
+  <input name="name" placeholder="name" />
+  <button type="submit">Register</button>
+</form>
+<div id="reg_status" style="font-size:12px;opacity:0.7"></div>
+        }
+      </div>
+    </div>
+  </div>;
+
+  js <<<JS
+const fmt = (cents) => {
+  const v = Number(cents || 0);
+  return (v / 100).toFixed(2);
+};
+
+const state = () => EmaApp.state;
+
+const setTotal = (t) => EmaApp.setState("cart_total", t);
+
+const addToCart = (p) => {
+  const current = Number(state().cart_total || 0);
+  setTotal(current + Number(p.price || 0));
+  const items = JSON.parse(localStorage.getItem("ema_cart_items") || "[]");
+  items.push(p);
+  localStorage.setItem("ema_cart_items", JSON.stringify(items));
+};
+
+const renderProducts = (products) => {
+  const root = document.getElementById("products");
+  if (!root) return;
+  root.innerHTML = "";
+
+  const list = document.createElement("div");
+  list.style.display = "grid";
+  list.style.gap = "10px";
+
+  for (const p of products) {
+    const card = document.createElement("div");
+    card.style.padding = "12px";
+    card.style.border = "1px solid rgba(0,0,0,0.12)";
+    card.style.borderRadius = "12px";
+    card.style.display = "flex";
+    card.style.justifyContent = "space-between";
+    card.style.alignItems = "center";
+
+    const left = document.createElement("div");
+    left.innerHTML = `<div style="font-weight:800">${p.name}</div><div style="opacity:0.7;font-size:12px">$${fmt(p.price)}</div>`;
+    const btn = document.createElement("button");
+    btn.textContent = "Add";
+    btn.addEventListener("click", () => addToCart(p));
+
+    card.appendChild(left);
+    card.appendChild(btn);
+    list.appendChild(card);
+  }
+
+  root.appendChild(list);
+};
+
+const loadProducts = async () => {
+  const res = await fetch("/api/products");
+  const products = await res.json();
+  renderProducts(products);
+};
+
+const initCart = () => {
+  const items = JSON.parse(localStorage.getItem("ema_cart_items") || "[]");
+  let total = 0;
+  for (const it of items) total += Number(it.price || 0);
+  setTotal(total);
+};
+
+const initRegister = () => {
+  const form = document.getElementById("reg");
+  const status = document.getElementById("reg_status");
+  if (!form) return;
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const email = String(fd.get("email") || "");
+    const name = String(fd.get("name") || "");
+    const body = new URLSearchParams();
+    body.set("email", email);
+    body.set("name", name);
+    const res = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body
+    });
+    const j = await res.json();
+    if (j.ok) {
+      if (status) status.textContent = "Registered.";
+      EmaApp.setState("customer_email", email);
+      EmaApp.setState("customer_name", name);
+    } else {
+      if (status) status.textContent = j.error || "Register failed";
+    }
+  });
+};
+
+window.__EMA_CHECKOUT__ = async () => {
+  const email = String(state().customer_email || "");
+  const items = localStorage.getItem("ema_cart_items") || "[]";
+  const total = Number(state().cart_total || 0);
+  const res = await fetch("/api/order", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, items_json: items, total })
+  });
+  const j = await res.json();
+  if (j.ok) {
+    alert("Order placed!");
+    localStorage.removeItem("ema_cart_items");
+    setTotal(0);
+  } else {
+    alert(j.error || "Order failed");
+  }
+};
+
+initCart();
+initRegister();
+loadProducts();
+JS
+  ;
+}
+

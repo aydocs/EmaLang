@@ -1,0 +1,13 @@
+[package]
+name = "ema_compiler"
+version = "0.1.0"
+edition = "2021"
+authors = ["emadocstechnologies", "aydocs"]
+description = "EmaLang Bootstrap Compiler Frontend"
+
+[dependencies]
+rusqlite = { version = "0.29.0", features = ["bundled"] }
+tiny_http = "0.12.0"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"

@@ -1,0 +1,14 @@
+@server {
+  std::http::route("GET", "/isset", php{
+$v = $_GET_v;
+echo json_object(
+  "isset_v", isset($v),
+  "raw_v", $v,
+  "int_v", int($v),
+  "str_v", str($v)
+);
+}, 200, "application/json; charset=utf-8");
+
+  std::http::serve(8080);
+}
+

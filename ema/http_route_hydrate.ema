@@ -1,0 +1,20 @@
+@server {
+  std::http::route("GET", "/page", php{
+$c = $_GET_counter;
+if ($c == "") { $c = 7; }
+hydrate("counter", $c);
+// SSR-first: leave body empty; client UI comes from frontend.ssr.html
+}, 200, "text/html; charset=utf-8");
+
+  std::http::serve(8080);
+}
+
+@client {
+  state counter = 0;
+  <div style: "padding:24px;font-family:system-ui">
+    <h2>Client UI</h2>
+    <p>"counter = " {{ counter }}</p>
+    <button onclick: inc(counter)>Increment</button>
+  </div>;
+}
+

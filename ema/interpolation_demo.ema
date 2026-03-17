@@ -1,0 +1,10 @@
+@client {
+    state counter = 0;
+
+    <div style: "padding:24px;font-family:system-ui">
+        <h1> "Interpolation demo" </h1>
+        <p> "counter = " {{ counter }} </p>
+        <button onclick: "EmaApp.setState('counter', (EmaApp.state.counter ?? 0) + 1)"> "Increment" </button>
+    </div>;
+}
+

@@ -1,0 +1,15 @@
+@server {
+    std::http::route("POST", "/json",
+        php <<<PHP
+$name = $_JSON_name;
+if ($name == "") { $name = "anon"; }
+echo json_encode($name);
+PHP
+        ,
+        200,
+        "application/json; charset=utf-8"
+    );
+
+    std::http::serve(8080);
+}
+

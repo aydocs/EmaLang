@@ -1,0 +1,44 @@
+model User {
+    name: str
+    level: int
+}
+
+@server {
+    print "Server: starting...";
+
+    // MVP PHP-subset (echo/print + $var = ...)
+    php {
+        echo "Hello from php block!";
+        $name = "Ema";
+        echo $name;
+        print "Server ready.";
+    };
+}
+
+@client {
+    // Raw CSS injected into <style>
+    css {
+        body { margin: 0; background: #0b1220; color: #e5e7eb; font-family: system-ui; }
+        #card { padding: 24px; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; max-width: 720px; margin: 40px auto; }
+        #title { font-size: 28px; font-weight: 800; letter-spacing: 0.5px; }
+        #hint { opacity: 0.8; margin-top: 10px; }
+        button { margin-top: 16px; padding: 10px 14px; border-radius: 12px; border: 0; background: #3b82f6; color: white; cursor: pointer; }
+    };
+
+    // Raw HTML injected into a container (innerHTML)
+    html {
+        <div id="card">
+            <div id="title">EMA Embedded Webstack</div>
+            <div id="hint">HTML/CSS/JS blocks are embedded inside .ema</div>
+            <button id="btn">Click</button>
+        </div>
+    };
+
+    // Raw JS injected into a <script> tag
+    js {
+        console.log("[EMA] embedded js running");
+        const btn = document.getElementById("btn");
+        if (btn) btn.addEventListener("click", () => alert("EMA Active!"));
+    };
+}
+

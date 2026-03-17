@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target
+Cargo.lock
+
+# Database
+/ema.db
+
+# Frontend build artifacts
+frontend.js
+frontend.ssr.css
+frontend.ssr.html
+frontend.build.json
+
+# LLVM IR
+output.ll
+
+# VS Code extension
+node_modules/
+out/
+*.vsix
+.vscode-test/
+
+# Logs and state
+.ema_state
+*.log
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+.cursor/

@@ -1,0 +1,13 @@
+@server {
+    std::http::route("/hello", php <<<PHP
+$name = $_GET_name;
+if ($name == "") {
+  $name = "world";
+}
+echo "hello " . $name;
+PHP
+    );
+
+    std::http::serve(8080);
+}
+

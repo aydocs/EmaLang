@@ -1,0 +1,119 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "EMA",
+    "scopeName": "source.ema",
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#heredoc" },
+        { "include": "#embedded_blocks" },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#ui_tags" },
+        { "include": "#interpolations" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [{
+                "name": "comment.line.double-slash.ema",
+                "match": "//.*$"
+            }]
+        },
+        "keywords": {
+            "patterns": [{
+                "name": "keyword.control.ema",
+                "match": "\\b(if|else|while|return|fn|var|state|model|print|html|css|js|php)\\b"
+            },
+            {
+                "name": "keyword.other.decorator.ema",
+                "match": "@(server|client)"
+            },
+            {
+                "name": "support.namespace.ema",
+                "match": "\\bstd::(http|fs|net|db)\\b"
+            },
+            {
+                "name": "support.function.ema",
+                "match": "\\b(set|inc|dec|toggle)\\b(?=\\s*\\()"
+            }]
+        },
+        "types": {
+            "patterns": [{
+                "name": "entity.name.type.ema",
+                "match": "\\b(int|str|float|bool)\\b"
+            }]
+        },
+        "strings": {
+            "patterns": [{
+                "name": "string.quoted.double.ema",
+                "begin": "\"",
+                "end": "\"",
+                "patterns": [
+                    { "name": "constant.character.escape.ema", "match": "\\\\." }
+                ]
+            }]
+        },
+        "numbers": {
+            "patterns": [{
+                "name": "constant.numeric.ema",
+                "match": "\\b\\d+(\\.\\d+)?\\b"
+            }]
+        },
+        "ui_tags": {
+            "patterns": [
+                {
+                    "name": "entity.name.tag.ema",
+                    "match": "<\\/?([a-zA-Z0-9]+)"
+                },
+                {
+                    "name": "entity.other.attribute-name.ema",
+                    "match": "\\b([a-zA-Z\\-]+):"
+                },
+                {
+                    "name": "entity.other.attribute-name.ema",
+                    "match": "\\b([a-zA-Z\\-]+)\\s*="
+                }
+            ]
+        },
+        "embedded_blocks": {
+            "patterns": [
+                {
+                    "name": "meta.embedded.block.ema",
+                    "begin": "\\b(html|css|js|php)\\b\\s*\\{",
+                    "beginCaptures": {
+                        "1": { "name": "keyword.control.ema" }
+                    },
+                    "end": "\\}",
+                    "patterns": [
+                        { "include": "#heredoc" },
+                        { "include": "#strings" },
+                        { "include": "#comments" },
+                        { "include": "#interpolations" }
+                    ]
+                }
+            ]
+        },
+        "interpolations": {
+            "patterns": [{
+                "name": "variable.other.interpolation.ema",
+                "begin": "\\{\\{",
+                "end": "\\}\\}",
+                "contentName": "meta.embedded.line.ema",
+                "patterns": [{ "include": "$self" }]
+            }]
+        },
+        "heredoc": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.heredoc.ema",
+                    "match": "<<<[A-Za-z_][A-Za-z0-9_]*"
+                },
+                {
+                    "name": "constant.other.heredoc-delimiter.ema",
+                    "match": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*$"
+                }
+            ]
+        }
+    }
+}

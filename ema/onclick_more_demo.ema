@@ -1,0 +1,14 @@
+@client {
+    state counter = 0;
+    state flag = false;
+
+    <div style: "padding:24px;font-family:system-ui">
+        <h1> "onclick DSL demo" </h1>
+        <p> "counter = " {{ counter }} </p>
+        <p> "flag = " {{ flag }} </p>
+        <button onclick: inc(counter)> "Inc" </button>
+        <button onclick: dec(counter)> "Dec" </button>
+        <button onclick: toggle(flag)> "Toggle" </button>
+    </div>;
+}
+

@@ -1,0 +1,13 @@
+@client {
+    <div css: css <<<CSS
+      .card { padding: 16px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.15); }
+      .title { font-weight: 900; letter-spacing: 0.5px; }
+CSS
+    >
+        <div class: "card">
+            <div class: "title"> "Component scoped CSS" </div>
+            <p> "Only this subtree should be styled." </p>
+        </div>
+    </div>;
+}
+

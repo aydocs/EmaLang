@@ -1,0 +1,10 @@
+@client{
+  js{
+    try {
+      throw "boom";
+    } catch (e) {
+      console.log("caught", e);
+    }
+  };
+}
+

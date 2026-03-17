@@ -1,0 +1,3 @@
+var sayi = 10;
+var metin = "Merhaba";
+var hata = sayi + metin; // Semantic Error: Int + Str is not allowed

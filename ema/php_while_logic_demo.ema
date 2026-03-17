@@ -1,0 +1,17 @@
+@server{
+  std::http::route("GET", "/loop", php{
+    $i = 0;
+    $sum = 0;
+    while ($i < 5) {
+      $sum = $sum + 2;
+      $i = $i + 1;
+    }
+    echo $sum;
+  }, 200, "text/plain; charset=utf-8");
+  std::http::serve(8084);
+}
+
+@client{
+  html{ <div> "Server demo at /loop" </div> };
+}
+

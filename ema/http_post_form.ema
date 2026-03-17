@@ -1,0 +1,32 @@
+@server {
+    std::http::route("GET", "/form",
+        php <<<PHP
+echo "<!doctype html>";
+echo "<html><body>";
+echo "<h1>POST demo</h1>";
+echo "<form method='POST' action='/submit'>";
+echo "<input name='name' placeholder='name'/>";
+echo "<button type='submit'>Send</button>";
+echo "</form>";
+echo "</body></html>";
+PHP
+        ,
+        200,
+        "text/html; charset=utf-8"
+    );
+
+    std::http::route("POST", "/submit",
+        php <<<PHP
+$name = $_POST_name;
+if ($name == "") { $name = "anon"; }
+echo "received " . $name;
+echo "method " . $_METHOD;
+PHP
+        ,
+        200,
+        "text/plain; charset=utf-8"
+    );
+
+    std::http::serve(8080);
+}
+

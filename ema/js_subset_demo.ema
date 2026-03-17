@@ -1,0 +1,29 @@
+@server{
+  std::http::serve(8086);
+}
+
+@client{
+  state counter = 1;
+
+  html{
+    <div class="box">
+      <h2>JS subset demo</h2>
+      <p>counter: {{ counter }}</p>
+      <button onclick="inc(counter)">+1</button>
+    </div>
+  };
+
+  css{
+    .box { padding: 16px; border: 1px solid rgba(255,255,255,.2); border-radius: 14px; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: white; cursor: pointer; }
+  };
+
+  js{
+    const a = 1 + 2 * 3;
+    let b = a > 3 ? 10 : 0;
+    if (b >= 10 && true) {
+      console.log("ok", EmaApp.state, { a: a, b: b });
+    }
+  };
+}
+

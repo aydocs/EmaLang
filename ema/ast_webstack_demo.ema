@@ -1,0 +1,32 @@
+@server{
+  std::http::route("GET", "/hello", php{
+    echo "<h1>Hello from PhpAst</h1>";
+  }, 200, "text/html; charset=utf-8");
+
+  std::http::serve(8082);
+}
+
+@client{
+  // HTML AST demo
+  html{
+    <div class="box">
+      <h2>Client HtmlAst</h2>
+      <p>"counter = " {{ counter }}</p>
+      <button onclick="inc(counter)">Increment</button>
+    </div>
+  };
+
+  // CSS AST demo (global)
+  css{
+    .box { padding: 12px; border: 1px solid #ddd; }
+    h2 { color: #2b6cb0; }
+  };
+
+  // JS AST demo (client script lifecycle)
+  js{
+    console.log("Hello from JsAst", EmaApp.state);
+  };
+
+  state counter = 1;
+}
+

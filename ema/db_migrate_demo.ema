@@ -1,0 +1,12 @@
+@server{
+  std::db::migrate("migrations");
+  std::http::route("GET", "/ok", php{
+    echo "migrated";
+  }, 200, "text/plain; charset=utf-8");
+  std::http::serve(8085);
+}
+
+@client{
+  html{ <div> "DB migrate demo at /ok" </div> };
+}
+

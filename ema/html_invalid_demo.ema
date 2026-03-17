@@ -1,0 +1,8 @@
+@client{
+  html{
+    <div>
+      <span>oops</div>
+    </div>
+  };
+}
+

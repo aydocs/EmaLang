@@ -1,0 +1,99 @@
+{
+    "name": "emalang-vscode",
+    "displayName": "EmaLang",
+    "description": "Premium developer experience for the EMA Universal Full-stack Ecosystem.",
+    "version": "0.1.0",
+    "publisher": "aydocs",
+    "author": "emadocstechnologies, aydocs",
+    "license": "MIT",
+    "icon": "icon.png",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/emadocstechnologies/emalang"
+    },
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onLanguage:ema",
+        "onCommand:ema.checkCurrentFile"
+    ],
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [{
+            "id": "ema",
+            "aliases": ["EMA", "ema"],
+            "extensions": [".ema"],
+            "icon": {
+                "light": "./icon.png",
+                "dark": "./icon.png"
+            },
+            "configuration": "./language-configuration.json"
+        }],
+        "grammars": [{
+            "language": "ema",
+            "scopeName": "source.ema",
+            "path": "./syntaxes/ema.tmLanguage.json"
+        }],
+        "snippets": [{
+            "language": "ema",
+            "path": "./snippets.json"
+        }],
+        "commands": [
+            {
+                "command": "ema.checkCurrentFile",
+                "title": "EMA: Check current file"
+            }
+        ],
+        "configuration": {
+            "title": "EMA",
+            "properties": {
+                "ema.diagnostics.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable EMA diagnostics (runs ema_compiler --check --json)."
+                },
+                "ema.diagnostics.debounceMs": {
+                    "type": "number",
+                    "default": 500,
+                    "minimum": 0,
+                    "description": "Debounce in milliseconds before running diagnostics after edits."
+                },
+                "ema.diagnostics.useCargoFallback": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "If the compiled ema_compiler binary is missing, use `cargo run` fallback."
+                },
+                "ema.diagnostics.embeddedParseDiagnostics": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show diagnostics produced by parsing embedded html/css/js/php blocks (messages like 'Error parsing html block: ...')."
+                },
+                "ema.diagnostics.strictEmbeddedParsing": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "If enabled, treat embedded html/css/js/php parse failures as hard errors (instead of allowing fallback)."
+                },
+                "ema.compiler.path": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional absolute path to ema_compiler binary. If set, diagnostics will use this binary."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "compile": "tsc -p .",
+        "watch": "tsc -watch -p .",
+        "package": "vsce package"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "@types/vscode": "^1.75.0",
+        "typescript": "^5.6.0",
+        "@vscode/vsce": "^3.0.0"
+    }
+}

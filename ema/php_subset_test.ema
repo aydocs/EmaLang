@@ -1,0 +1,14 @@
+@server {
+    php <<<PHP
+$name = "Ema";
+$v = 2 + 3;
+echo "hello " . $name;
+if ($v == 5) {
+  echo "ok " . $v;
+} else {
+  echo "bad";
+}
+PHP
+    ;
+}
+

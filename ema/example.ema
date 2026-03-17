@@ -1,0 +1,56 @@
+model User {
+    name: str
+    age: int
+}
+
+print "--- ema db native sqlite test ---";
+print "Adding users to SQLite database";
+
+User::insert("Core Architect", 45);
+User::insert("AI Assistant", 1);
+
+print "--- ema web direct hosting ---";
+var port = 8080;
+std::http::serve(port);
+
+@server {
+    print "core modules access: OK";
+}
+
+@client {
+    print "ema live is loading";
+
+    state userName = "ayberk cihan";
+    state version = 1.0;
+    
+    <div style: "background: #0f2027; color: white; padding: 60px; border-radius: 40px; text-align: center; max-width: 800px; margin: 50px auto;">
+        
+        <div style: "background: rgba(255,255,255,0.05); padding: 20px; border-radius: 20px; margin-bottom: 30px;">
+            <h1 style: "font-size: 3rem; margin: 0;">
+                "ema live"
+            </h1>
+            <p style: "opacity: 0.6; text-transform: uppercase;">
+                "full-stack runtime"
+            </p>
+        </div>
+
+        <div style: "text-align: left; padding: 0 20px;">
+            <p style: "font-size: 1.5rem;">
+                "welcome, " {{ userName }}
+            </p>
+            <p style: "opacity: 0.8;">
+                "you are running on ema v" {{ version }} "."
+            </p>
+        </div>
+
+        <div style: "margin-top: 40px;">
+            <button onclick: "alert('ema live button onclick alert aktif!')" style: "background: #3a7bd5; color: white; border: none; padding: 15px 35px; border-radius: 12px; cursor: pointer;">
+                "start system"
+            </button>
+        </div>
+
+        <div style: "margin-top: 50px; font-size: 0.7rem; opacity: 0.4;">
+            "work in progress"
+        </div>
+    </div>;
+}

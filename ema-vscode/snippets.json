@@ -1,0 +1,108 @@
+{
+    "EMA Model": {
+        "prefix": "model",
+        "body": [
+            "model ${1:Name} {",
+            "    ${2:field}: ${3:str}",
+            "}"
+        ],
+        "description": "Create a new EMA-DB model"
+    },
+    "EMA Server Block": {
+        "prefix": "@server",
+        "body": [
+            "@server {",
+            "    ${1:// server-side logic}",
+            "}"
+        ],
+        "description": "Native server execution block"
+    },
+    "EMA Client Block": {
+        "prefix": "@client",
+        "body": [
+            "@client {",
+            "    ${1:// reactive UI logic}",
+            "}"
+        ],
+        "description": "WASM/JS client execution block"
+    },
+    "EMA UI Div": {
+        "prefix": "div",
+        "body": [
+            "<div style: \"${1:padding: 20px;}\">",
+            "    ${2:content}",
+            "</div>"
+        ],
+        "description": "EMA UI container"
+    },
+    "EMA State": {
+        "prefix": "state",
+        "body": [
+            "state ${1:name} = ${2:0};"
+        ],
+        "description": "Reactive state declaration"
+    },
+    "EMA onclick inc": {
+        "prefix": "onclick-inc",
+        "body": [
+            "<button onclick: inc(${1:counter})> \"${2:Inc}\" </button>"
+        ],
+        "description": "onclick inc(stateVar)"
+    },
+    "EMA onclick set": {
+        "prefix": "onclick-set",
+        "body": [
+            "<button onclick: set(${1:counter}, ${1:counter} + 1)> \"${2:Increment}\" </button>"
+        ],
+        "description": "onclick set(stateVar, expr)"
+    },
+    "EMA Embedded HTML block": {
+        "prefix": "htmlblock",
+        "body": [
+            "html <<<${1:HTML}",
+            "${2:<div></div>}",
+            "${1:HTML}",
+            ";"
+        ],
+        "description": "Embedded HTML heredoc block (client-only)"
+    },
+    "EMA Embedded CSS block": {
+        "prefix": "cssblock",
+        "body": [
+            "css <<<${1:CSS}",
+            "${2:#ema-root { } }",
+            "${1:CSS}",
+            ";"
+        ],
+        "description": "Embedded CSS heredoc block (client-only)"
+    },
+    "EMA Embedded JS block": {
+        "prefix": "jsblock",
+        "body": [
+            "js <<<${1:JS}",
+            "${2:// JS here}",
+            "${1:JS}",
+            ";"
+        ],
+        "description": "Embedded JS heredoc block (client-only)"
+    },
+    "EMA Embedded PHP block": {
+        "prefix": "phpblock",
+        "body": [
+            "php {",
+            "${1:// php subset here}",
+            "}"
+        ],
+        "description": "Embedded PHP brace block (server-only)"
+    },
+    "EMA HTTP route (PHP)": {
+        "prefix": "route",
+        "body": [
+            "std::http::route(\"${1:GET}\", \"${2:/path}\", php{",
+            "${3:echo \"ok\";}",
+            "}, ${4:200}, \"${5:text/html; charset=utf-8}\");"
+        ],
+        "description": "HTTP route with PHP handler"
+    }
+    }
+}
