@@ -1,0 +1,13 @@
+import { MyButton } from "lib_ui";
+
+@client {
+    <div css{ padding: 20px; text-align: center; border: 1px solid #ddd; border-radius: 10px; }>
+        <h1 css{ color: #2c3e50; }> "Module Resolution Test" </h1>
+        <p> "The button below is imported from lib_ui.ema" </p>
+        <MyButton label="Imported Button Works!" />
+    </div>
+}
+
+@server {
+    print "EMP Test Server Started!";
+}

@@ -1,0 +1,22 @@
+@strict
+
+var counter: Int = 10;
+print counter;
+
+// ERROR: Missing type annotation in @strict mode
+var name = "Ema"; 
+
+// ERROR: Type mismatch
+var age: Int = "25";
+
+fn greet(n: Str): Str {
+    return "Hello " + n;
+}
+
+// ERROR: Argument 0 type mismatch (Expected Str, Found Int)
+print greet(123);
+
+// ERROR: Return type mismatch (Expected Int, Found Str)
+fn bad_add(a: Int): Int {
+    return "Not an int";
+}

@@ -1,0 +1,9 @@
+component Header(title: str) {
+    <header class="navbar">
+        <h1>{{ title }}</h1>
+    </header>
+}
+
+@client {
+    <Header title="Welcome to EMA!" />
+}

@@ -1,0 +1,10 @@
+@server {
+    print "Fetching JSONplaceholder API...";
+    var data: Str = std::net::fetch("https://jsonplaceholder.typicode.com/todos/1");
+    print "Received Payload:";
+    print data;
+
+    var parsed = std::json::parse(data);
+    print "Parsed title:";
+    print parsed.title;
+}

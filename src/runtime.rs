@@ -3,12 +3,18 @@ use crate::ast::{
     EmbeddedKind, Expr, Program, Stmt, BinaryOp,
     PhpExpr as AstPhpExpr, PhpProgram as AstPhpProgram, PhpStmt as AstPhpStmt,
 };
-use rusqlite::Connection;
-use rusqlite::types::Value as SqlValue;
-use rusqlite::params_from_iter;
-use tiny_http::{Server, Response, Header};
 use serde_json::json;
 use serde_json::Value as JsonValue;
+use sqlx::{AnyPool, Row};
+use axum::{
+    routing::{get, any},
+    http::{header, StatusCode},
+    response::IntoResponse,
+    Router,
+    extract::State,
+};
+use tower_http::cors::CorsLayer;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 enum PhpTok {
@@ -463,6 +469,7 @@ impl RuntimeValue {
     }
 }
 
+#[derive(Clone)]
 pub struct Environment {
     variables: HashMap<String, RuntimeValue>,
 }
@@ -484,13 +491,17 @@ impl Environment {
     }
 }
 
+#[derive(Clone)]
 pub struct Interpreter {
     pub env: Environment,
     pub return_value: Option<RuntimeValue>,
-    pub db_conn: Connection,
+    pub db_pool: sqlx::AnyPool,
     pub hydration_state: HashMap<String, RuntimeValue>,
     pub http_routes: HashMap<String, HttpRoute>,
     pub model_fields: HashMap<String, Vec<(String, crate::ast::Type)>>,
+    pub history: Vec<()>,         // Compatibility stub
+    pub test_mode: bool,          // Compatibility stub
+    pub test_failures: Vec<String>, // Compatibility stub
 }
 
 #[derive(Debug, Clone)]
@@ -506,40 +517,46 @@ pub struct HttpRoute {
     pub content_type: String,
 }
 
+#[derive(Clone)]
+struct AppState {
+    hydration_state: HashMap<String, RuntimeValue>,
+    cached_ssr_html: String,
+    cached_ssr_css: String,
+    build_hash: String,
+    js_hash: String,
+    js_content: String,
+    build_info_content: String,
+    tailwind_needed: bool,
+    bootstrap_needed: bool,
+}
+
 impl Interpreter {
-    pub fn new() -> Self {
+    pub fn new(_verbose: bool, db_pool: sqlx::AnyPool) -> Self {
         Interpreter {
             env: Environment::new(),
             return_value: None,
-            db_conn: Connection::open("ema.db").expect("Failed to connect to EMA database (SQLite)!"),
+            db_pool,
             hydration_state: HashMap::new(),
             http_routes: HashMap::new(),
             model_fields: HashMap::new(),
+            history: Vec::new(),
+            test_mode: false,
+            test_failures: Vec::new(),
         }
     }
 
-    fn sql_value_to_json(v: SqlValue) -> serde_json::Value {
-        match v {
-            SqlValue::Null => serde_json::Value::Null,
-            SqlValue::Integer(i) => serde_json::json!(i),
-            SqlValue::Real(f) => serde_json::json!(f),
-            SqlValue::Text(t) => serde_json::json!(t),
-            SqlValue::Blob(_) => serde_json::Value::Null,
-        }
+    pub fn save_snapshot(&mut self) {}
+    pub fn list_vars(&self) -> Vec<(String, RuntimeValue)> {
+        self.env.variables.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
+    pub fn clear_env(&mut self) { self.env.variables.clear(); }
+    pub fn restore_snapshot(&mut self) -> bool { false }
 
     fn is_safe_sql_ident(s: &str) -> bool {
         !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 
-    fn execute_insert_prepared(&self, table: &str, values: Vec<SqlValue>) -> Result<usize, rusqlite::Error> {
-        if !Self::is_safe_sql_ident(table) {
-            return Err(rusqlite::Error::InvalidParameterName(table.to_string()));
-        }
-        let placeholders = (0..values.len()).map(|i| format!("?{}", i + 1)).collect::<Vec<_>>().join(", ");
-        let query = format!("INSERT INTO {} VALUES (NULL, {})", table, placeholders);
-        self.db_conn.execute(&query, params_from_iter(values))
-    }
+    // Legacy DB helpers removed. using direct sqlx in eval_expr/eval_stmt.
 
     fn model_columns_for_select(&self, model: &str) -> Vec<String> {
         self.model_fields
@@ -548,104 +565,102 @@ impl Interpreter {
             .unwrap_or_default()
     }
 
-    fn model_all_json(&self, model: &str) -> String {
+    async fn model_all_json(&self, model: &str) -> String {
         if !Self::is_safe_sql_ident(model) {
             return "[]".to_string();
         }
         let cols = self.model_columns_for_select(model);
-        if cols.iter().any(|c| !Self::is_safe_sql_ident(c)) {
-            return "[]".to_string();
-        }
         let select_cols = if cols.is_empty() {
             "id".to_string()
         } else {
             format!("id, {}", cols.join(", "))
         };
         let query = format!("SELECT {} FROM {}", select_cols, model);
-        let mut stmt = match self.db_conn.prepare(&query) {
-            Ok(s) => s,
-            Err(_) => return "[]".to_string(),
-        };
-        let rows = match stmt.query_map([], |row| {
-            let mut obj = serde_json::Map::new();
-            let id: i64 = row.get(0)?;
-            obj.insert("id".to_string(), serde_json::json!(id));
-            for (idx, name) in cols.iter().enumerate() {
-                let v: SqlValue = row.get(idx + 1)?;
-                obj.insert(name.clone(), Self::sql_value_to_json(v));
-            }
-            Ok(serde_json::Value::Object(obj))
-        }) {
+        let rows = match sqlx::query(&query).fetch_all(&self.db_pool).await {
             Ok(r) => r,
             Err(_) => return "[]".to_string(),
         };
-        let mut out = Vec::new();
-        for r in rows {
-            if let Ok(v) = r {
-                out.push(v);
+        let mut list = Vec::new();
+        for row in rows {
+            let mut obj = serde_json::Map::new();
+            let rid: i64 = row.try_get(0).unwrap_or(0);
+            obj.insert("id".to_string(), serde_json::json!(rid));
+            for (idx, name) in cols.iter().enumerate() {
+                use sqlx::Row;
+                let val: serde_json::Value = if let Ok(s) = row.try_get::<String, _>(idx + 1) {
+                    serde_json::json!(s)
+                } else if let Ok(i) = row.try_get::<i64, _>(idx + 1) {
+                    serde_json::json!(i)
+                } else if let Ok(f) = row.try_get::<f64, _>(idx + 1) {
+                    serde_json::json!(f)
+                } else {
+                    serde_json::Value::Null
+                };
+                obj.insert(name.clone(), val);
             }
+            list.push(serde_json::Value::Object(obj));
         }
-        serde_json::to_string(&out).unwrap_or("[]".to_string())
+        serde_json::Value::Array(list).to_string()
     }
 
-    fn model_find_json(&self, model: &str, id: i64) -> String {
+    async fn model_find_json(&self, model: &str, id: i64) -> String {
         if !Self::is_safe_sql_ident(model) {
             return "null".to_string();
         }
         let cols = self.model_columns_for_select(model);
-        if cols.iter().any(|c| !Self::is_safe_sql_ident(c)) {
-            return "null".to_string();
-        }
         let select_cols = if cols.is_empty() {
             "id".to_string()
         } else {
             format!("id, {}", cols.join(", "))
         };
-        let query = format!("SELECT {} FROM {} WHERE id = ?1 LIMIT 1", select_cols, model);
-        let mut stmt = match self.db_conn.prepare(&query) {
-            Ok(s) => s,
-            Err(_) => return "null".to_string(),
-        };
-        let mut rows = match stmt.query([id]) {
-            Ok(r) => r,
-            Err(_) => return "null".to_string(),
-        };
-        let row = match rows.next() {
+        let query = format!("SELECT {} FROM {} WHERE id = $1 LIMIT 1", select_cols, model);
+        let row = match sqlx::query(&query).bind(id).fetch_optional(&self.db_pool).await {
             Ok(Some(r)) => r,
             _ => return "null".to_string(),
         };
+
         let mut obj = serde_json::Map::new();
-        let rid: i64 = row.get(0).unwrap_or(id);
+        let rid: i64 = row.try_get(0).unwrap_or(id);
         obj.insert("id".to_string(), serde_json::json!(rid));
         for (idx, name) in cols.iter().enumerate() {
-            let v: SqlValue = row.get(idx + 1).unwrap_or(SqlValue::Null);
-            obj.insert(name.clone(), Self::sql_value_to_json(v));
+            use sqlx::Row;
+            let val: serde_json::Value = if let Ok(s) = row.try_get::<String, _>(idx + 1) {
+                serde_json::json!(s)
+            } else if let Ok(i) = row.try_get::<i64, _>(idx + 1) {
+                serde_json::json!(i)
+            } else if let Ok(f) = row.try_get::<f64, _>(idx + 1) {
+                serde_json::json!(f)
+            } else {
+                serde_json::Value::Null
+            };
+            obj.insert(name.clone(), val);
         }
         serde_json::Value::Object(obj).to_string()
     }
 
-    pub fn eval_program(&mut self, program: Program) {
+    pub async fn eval_program(&mut self, program: Program) {
         for stmt in program.statements {
-            self.eval_stmt(stmt);
+            self.eval_stmt(stmt).await;
             if self.return_value.is_some() {
                 break;
             }
         }
     }
 
-    fn eval_stmt(&mut self, stmt: Stmt) {
-        match stmt {
+    pub fn eval_stmt<'a>(&'a mut self, stmt: Stmt) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            match stmt {
             Stmt::VarDecl { name, value, .. } => {
-                let val = self.eval_expr(value);
+                let val = self.eval_expr(value).await;
                 self.env.define(name, val);
             }
             Stmt::StateDecl { name, value, .. } => {
-                let val = self.eval_expr(value);
+                let val = self.eval_expr(value).await;
                 self.env.define(name.clone(), val.clone());
                 self.hydration_state.insert(name, val);
             }
             Stmt::PrintStmt(expr, _) => {
-                let val = self.eval_expr(expr);
+                let val = self.eval_expr(expr).await;
                 match val {
                     RuntimeValue::StringVal(s) => println!("{}", s),
                     RuntimeValue::IntVal(i) => println!("{}", i),
@@ -657,10 +672,10 @@ impl Interpreter {
                 }
             }
             Stmt::ExprStmt(expr, _) => {
-                self.eval_expr(expr);
+                self.eval_expr(expr).await;
             }
             Stmt::IfStmt { condition, then_branch, else_branch, .. } => {
-                let cond_val = self.eval_expr(condition);
+                let cond_val = self.eval_expr(condition).await;
                 let is_true = match cond_val {
                     RuntimeValue::BoolVal(b) => b,
                     RuntimeValue::IntVal(i) => i != 0,
@@ -669,19 +684,19 @@ impl Interpreter {
                 };
                 if is_true {
                     for s in then_branch {
-                        self.eval_stmt(s);
+                        self.eval_stmt(s).await;
                         if self.return_value.is_some() { break; }
                     }
                 } else if let Some(else_stmts) = else_branch {
                     for s in else_stmts {
-                        self.eval_stmt(s);
+                        self.eval_stmt(s).await;
                         if self.return_value.is_some() { break; }
                     }
                 }
             }
             Stmt::WhileStmt { condition, body, .. } => {
                 loop {
-                    let cond_val = self.eval_expr(condition.clone());
+                    let cond_val = self.eval_expr(condition.clone()).await;
                     let is_true = match cond_val {
                         RuntimeValue::BoolVal(b) => b,
                         RuntimeValue::IntVal(i) => i != 0,
@@ -692,7 +707,7 @@ impl Interpreter {
                         break;
                     }
                     for s in body.clone() {
-                        self.eval_stmt(s);
+                        self.eval_stmt(s).await;
                         if self.return_value.is_some() { break; }
                     }
                 }
@@ -700,14 +715,14 @@ impl Interpreter {
             Stmt::ServerBlock(stmts, _) => {
                 println!("[EMA SERVER YURUTULUYOR]");
                 for s in stmts {
-                    self.eval_stmt(s);
+                    self.eval_stmt(s).await;
                     if self.return_value.is_some() { break; }
                 }
             }
             Stmt::ClientBlock(stmts, _) => {
                 println!("[EMA CLIENT YURUTULUYOR (WASM HEADLESS)]");
                 for s in stmts {
-                    self.eval_stmt(s);
+                    self.eval_stmt(s).await;
                     if self.return_value.is_some() { break; }
                 }
             }
@@ -732,33 +747,33 @@ impl Interpreter {
                 self.model_fields.insert(name.clone(), schema);
 
                 let query = format!("CREATE TABLE IF NOT EXISTS {} (id INTEGER PRIMARY KEY AUTOINCREMENT, {})", name, columns.join(", "));
-                if let Err(e) = self.db_conn.execute(&query, ()) {
-                    panic!("Table creation error ({}): {}", name, e);
-                } else {
-                    println!("[EMA-DB] SQLite table ready: '{}'.", name);
-                }
+                let _ = sqlx::query(&query).execute(&self.db_pool).await;
+                println!("[EMA-DB] SQLite table ready: '{}'.", name);
             }
             Stmt::FnDecl { name, params, body, .. } => {
                 let func_val = RuntimeValue::Function {
                     name: name.clone(),
-                    params,
+                    params: params.into_iter().map(|(n, _)| n).collect(),
                     body,
                 };
                 self.env.define(name, func_val);
             }
             Stmt::ReturnStmt(opt_expr, _) => {
                 let val = if let Some(expr) = opt_expr {
-                    self.eval_expr(expr)
+                    self.eval_expr(expr).await
                 } else {
                     RuntimeValue::Null
                 };
                 self.return_value = Some(val);
             }
+            _ => {}
         }
+    })
     }
 
-    fn eval_expr(&mut self, expr: Expr) -> RuntimeValue {
-        match expr {
+    pub fn eval_expr<'a>(&'a mut self, expr: Expr) -> std::pin::Pin<Box<dyn std::future::Future<Output = RuntimeValue> + Send + 'a>> {
+        Box::pin(async move {
+            match expr {
             Expr::IntLit(val, _) => RuntimeValue::IntVal(val),
             Expr::FloatLit(val, _) => RuntimeValue::FloatVal(val),
             Expr::StringLit(s, _) => RuntimeValue::StringVal(s),
@@ -771,7 +786,7 @@ impl Interpreter {
                 }
             }
             Expr::Call { callee, args, .. } => {
-                let callee_val = self.eval_expr(*callee);
+                let callee_val = self.eval_expr(*callee).await;
 
                 if let RuntimeValue::Function { name: _, params, body } = callee_val {
                     if args.len() != params.len() {
@@ -781,7 +796,7 @@ impl Interpreter {
                     // Pre-evaluate arguments
                     let mut evaluated_args = Vec::new();
                     for arg in args {
-                        evaluated_args.push(self.eval_expr(arg));
+                        evaluated_args.push(self.eval_expr(arg).await);
                     }
                     
                     // Setup local variable scope injection
@@ -795,7 +810,7 @@ impl Interpreter {
 
                     // Execute function body
                     for s in body {
-                        self.eval_stmt(s);
+                        self.eval_stmt(s).await;
                         if self.return_value.is_some() {
                             break;
                         }
@@ -824,12 +839,12 @@ impl Interpreter {
                         let dir = if args.is_empty() {
                             "migrations".to_string()
                         } else {
-                            match self.eval_expr(args[0].clone()) {
+                            match self.eval_expr(args[0].clone()).await {
                                 RuntimeValue::StringVal(s) => s,
                                 _ => "migrations".to_string(),
                             }
                         };
-                        match crate::db::apply_migrations(&self.db_conn, &dir) {
+                        match crate::db::apply_migrations(&self.db_pool, &dir).await {
                             Ok(_) => RuntimeValue::BoolVal(true),
                             Err(e) => panic!("DB migration error: {}", e),
                         }
@@ -838,7 +853,7 @@ impl Interpreter {
                         if args.len() != 1 {
                             panic!("std::fs::read(path) 1 parametre gerektirir!");
                         }
-                        let path_arg = self.eval_expr(args[0].clone());
+                        let path_arg = self.eval_expr(args[0].clone()).await;
                         if let RuntimeValue::StringVal(path) = path_arg {
                             match std::fs::read_to_string(&path) {
                                 Ok(content) => RuntimeValue::StringVal(content),
@@ -852,8 +867,8 @@ impl Interpreter {
                         if args.len() != 2 {
                             panic!("std::fs::write(path, data) 2 parametre gerektirir!");
                         }
-                        let path_arg = self.eval_expr(args[0].clone());
-                        let data_arg = self.eval_expr(args[1].clone());
+                        let path_arg = self.eval_expr(args[0].clone()).await;
+                        let data_arg = self.eval_expr(args[1].clone()).await;
 
                         if let (RuntimeValue::StringVal(path), RuntimeValue::StringVal(data)) = (path_arg, data_arg) {
                             match std::fs::write(&path, data) {
@@ -868,7 +883,7 @@ impl Interpreter {
                         if args.len() != 1 {
                             panic!("std::net::listen(port) 1 parametre gerektirir!");
                         }
-                        let port_arg = self.eval_expr(args[0].clone());
+                        let port_arg = self.eval_expr(args[0].clone()).await;
                         if let RuntimeValue::IntVal(port) = port_arg {
                             println!("[EMA-NET] Starting server on port {}...", port);
                             println!("[EMA-NET] Dinleme basarili. (Simulasyon: HTTP 200 OK gonderildi)");
@@ -885,8 +900,8 @@ impl Interpreter {
                         // Overload:
                         // - route(path, php, [status], [ct])
                         // - route(method, path, php, [status], [ct])   where method is \"GET\"/\"POST\" and path starts with '/'
-                        let first = self.eval_expr(args[0].clone());
-                        let second = self.eval_expr(args[1].clone());
+                        let first = self.eval_expr(args[0].clone()).await;
+                        let second = self.eval_expr(args[1].clone()).await;
 
                         let (method, path, handler_idx) = match (first, second) {
                             (RuntimeValue::StringVal(m), RuntimeValue::StringVal(p))
@@ -912,7 +927,7 @@ impl Interpreter {
                         let opt_start = handler_idx + 1;
 
                         if args.len() >= opt_start + 1 {
-                            let v = self.eval_expr(args[opt_start].clone());
+                            let v = self.eval_expr(args[opt_start].clone()).await;
                             match v {
                                 RuntimeValue::IntVal(i) => status = i.clamp(100, 599) as u16,
                                 RuntimeValue::FloatVal(f) => status = (f as i64).clamp(100, 599) as u16,
@@ -921,7 +936,7 @@ impl Interpreter {
                             }
                         }
                         if args.len() >= opt_start + 2 {
-                            let v = self.eval_expr(args[opt_start + 1].clone());
+                            let v = self.eval_expr(args[opt_start + 1].clone()).await;
                             if let RuntimeValue::StringVal(s) = v {
                                 content_type = s;
                             }
@@ -933,268 +948,114 @@ impl Interpreter {
                         RuntimeValue::BoolVal(true)
                     }
                     ("std::http", "serve") => {
-                        let port_val = self.eval_expr(args[0].clone());
+                        let port_val = self.eval_expr(args[0].clone()).await;
                         let port = match port_val {
                             RuntimeValue::IntVal(p) => p,
                             _ => panic!("std::http::serve(port) icin port Integer olmalidir!"),
                         };
 
-                        let addr = format!("0.0.0.0:{}", port);
-                        let server = Server::http(&addr).expect("Failed to start server!");
-                        println!("[EMA-HTTP] Server is running at {}. You can open it in your browser.", addr);
+                        let build_info_content = std::fs::read_to_string("frontend.build.json").unwrap_or_else(|_| "{}".to_string());
+                        let build_info: serde_json::Value = serde_json::from_str(&build_info_content).unwrap_or(serde_json::json!({}));
+                        
+                        let tailwind_needed = build_info.get("tailwind").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let bootstrap_needed = build_info.get("bootstrap").and_then(|v| v.as_bool()).unwrap_or(false);
 
-                        let build_json = std::fs::read_to_string("frontend.build.json")
-                            .ok()
-                            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-                        let build_hash = build_json
-                            .as_ref()
-                            .and_then(|v| v.get("hash").and_then(|h| h.as_str()).map(|s| s.to_string()))
-                            .unwrap_or_default();
-                        let js_hash = build_json
-                            .as_ref()
-                            .and_then(|v| v.get("jsHash").and_then(|h| h.as_str()).map(|s| s.to_string()))
-                            .unwrap_or_default();
+                        let shared_state = Arc::new(AppState {
+                            hydration_state: self.hydration_state.clone(),
+                            cached_ssr_html: std::fs::read_to_string("frontend.ssr.html").unwrap_or_default(),
+                            cached_ssr_css: std::fs::read_to_string("frontend.ssr.css").unwrap_or_default(),
+                            build_hash: build_info.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            js_hash: build_info.get("jsHash").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            js_content: std::fs::read_to_string("frontend.js").unwrap_or_default(),
+                            build_info_content,
+                            tailwind_needed,
+                            bootstrap_needed,
+                        });
 
-                        let etag_js = if js_hash.is_empty() {
-                            String::new()
-                        } else {
-                            format!("\"{}\"", js_hash)
-                        };
-                        let etag_build = if build_hash.is_empty() {
-                            String::new()
-                        } else {
-                            format!("\"{}\"", build_hash)
-                        };
-                        // Cache generated frontend assets in memory (avoid per-request disk reads).
-                        let cached_frontend_js = std::fs::read_to_string("frontend.js").ok();
-                        let cached_build_json = std::fs::read_to_string("frontend.build.json").ok();
-                        let cached_ssr_html = std::fs::read_to_string("frontend.ssr.html").ok();
-                        let cached_ssr_css = std::fs::read_to_string("frontend.ssr.css").ok();
-                        let cached_build_hash = cached_build_json
-                            .as_ref()
-                            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                            .and_then(|v| v.get("hash").and_then(|h| h.as_str()).map(|s| s.to_string()))
-                            .unwrap_or_else(|| build_hash.clone());
-                        let cached_js_hash = cached_build_json
-                            .as_ref()
-                            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                            .and_then(|v| v.get("jsHash").and_then(|h| h.as_str()).map(|s| s.to_string()))
-                            .unwrap_or_else(|| js_hash.clone());
+                        async fn handler(
+                            path_uri: axum::extract::OriginalUri,
+                            method_obj: axum::http::Method,
+                            State(state): State<Arc<AppState>>,
+                            body_resp: String,
+                        ) -> impl IntoResponse {
+                            let path = path_uri.path();
+                            let method = method_obj.to_string().to_uppercase();
 
-                        for mut request in server.incoming_requests() {
-                            let url = request.url().to_string();
-                            let (path, query) = Self::split_url(&url);
-                            let method = request.method().to_string().to_uppercase();
-                            println!("[EMA-HTTP] Istek: {} {} (path={})", method, url, path);
+                            if path == "/frontend.js" {
+                                return ([(header::CONTENT_TYPE, "application/javascript")], state.js_content.clone()).into_response();
+                            }
+                            if path == "/frontend.build.json" {
+                                return ([(header::CONTENT_TYPE, "application/json")], state.build_info_content.clone()).into_response();
+                            }
 
-                            // Read request body (for POST forms)
-                            let mut body_bytes = Vec::new();
-                            request
-                                .as_reader()
-                                .read_to_end(&mut body_bytes)
-                                .ok();
-                            let body_str = String::from_utf8_lossy(&body_bytes).to_string();
-
-                            let content_type = request
-                                .headers()
-                                .iter()
-                                .find(|h| h.field.equiv("Content-Type"))
-                                .map(|h| h.value.as_str().to_string())
-                                .unwrap_or_default();
-                            let ct_lc = content_type.to_ascii_lowercase();
-                            let post = if method == "POST" && ct_lc.contains("application/x-www-form-urlencoded") {
-                                Self::parse_form_urlencoded(&body_str)
-                            } else {
-                                HashMap::new()
-                            };
-                            let json_body = if method == "POST" && ct_lc.contains("application/json") {
-                                Self::parse_json_shallow(&body_str)
-                            } else {
-                                (None, HashMap::new())
-                            };
-
-                            // Route precedence: if user defined a handler for this path, run it first (including "/").
-                            if let Some(route) = self
-                                .http_routes
-                                .get(&format!("{} {}", method, path))
-                                .or_else(|| self.http_routes.get(&format!("ANY {}", path)))
-                                .cloned()
-                            {
-                                let body = self.eval_php_http_handler(&route.handler, &query, &post, &json_body, &method);
-                                let ct = route.content_type;
-
-                                let body = if ct.to_ascii_lowercase().contains("text/html") {
-                                    // SSR-first: if handler returns empty body, use compiled SSR UI as page shell.
-                                    let root_html = if body.trim().is_empty() {
-                                        cached_ssr_html.clone().unwrap_or_default()
-                                    } else {
-                                        body.clone()
-                                    };
-                                    let ssr_css = cached_ssr_css.clone().unwrap_or_default();
-                                    let mut hydration_map = serde_json::Map::new();
-                                    for (k, v) in &self.hydration_state {
-                                        hydration_map.insert(k.clone(), v.to_json());
-                                    }
-                                    let hydration_json = serde_json::Value::Object(hydration_map).to_string();
-
-                                    format!(
-                                        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EMA Page</title>
-  <style>{}</style>
-</head>
-<body>
-  <div id="ema-root">{}</div>
-  <script>window.__EMA_HYDRATION__ = {}; window.__EMA_BUILD__ = {{ hash: "{}" }};</script>
-  <script src="/frontend.js?v={}"></script>
-</body>
-</html>"#,
-                                        ssr_css, root_html, hydration_json, cached_build_hash, cached_js_hash
-                                    )
-                                } else {
-                                    body
-                                };
-
-                                let response = Response::from_string(body)
-                                    .with_status_code(route.status)
-                                    .with_header(Header::from_bytes(&b"Content-Type"[..], ct.as_bytes()).unwrap());
-                                request.respond(response).ok();
-                            } else if path == "/" || path == "/index.html" {
-                                let mut hydration_map = serde_json::Map::new();
-                                for (k, v) in &self.hydration_state {
-                                    hydration_map.insert(k.clone(), v.to_json());
+                            if path == "/" || path == "/index.html" {
+                                let mut h_map = serde_json::Map::new();
+                                for (k, v) in &state.hydration_state {
+                                    h_map.insert(k.clone(), v.to_json());
                                 }
-                                let hydration_json = serde_json::Value::Object(hydration_map).to_string();
-                                let ssr_html = cached_ssr_html.clone().unwrap_or_default();
-                                let ssr_css = cached_ssr_css.clone().unwrap_or_default();
-                                let html = format!(r#"<!DOCTYPE html>
+                                let h_json = serde_json::Value::Object(h_map).to_string();
+
+                                let tailwind_tag = if state.tailwind_needed { r#"<script src="https://unpkg.com/@tailwindcss/browser@4"></script>"# } else { "" };
+                                let bootstrap_tag = if state.bootstrap_needed { r#"<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>"# } else { "" };
+
+                                let html = format!(
+                                    r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EMA Unified App</title>
-    <style>
-        body {{ margin: 0; background: #050a0f; color: white; font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; }}
-        #ema-root {{ width: 100%; max-width: 800px; }}
-    </style>
+    <style>body {{ margin: 0; background: #050a0f; color: white; font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; }}</style>
     <style>{}</style>
+    {}
+    {}
 </head>
 <body>
     <div id="ema-root">{}</div>
-    <script>
-        window.__EMA_HYDRATION__ = {};
-        window.__EMA_BUILD__ = {{ hash: "{}" }};
-    </script>
+    <script>window.__EMA_HYDRATION__ = {}; window.__EMA_BUILD__ = {{ hash: "{}" }};</script>
     <script src="/frontend.js?v={}"></script>
 </body>
-</html>"#, ssr_css, ssr_html, hydration_json, cached_build_hash, cached_js_hash);
-                                let response = Response::from_string(html)
-                                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap())
-                                    .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
-                                request.respond(response).ok();
-                            } else if path == "/frontend.js" {
-                                if let Some(js) = cached_frontend_js.clone() {
-                                    let inm = request
-                                        .headers()
-                                        .iter()
-                                        .find(|h| h.field.equiv("If-None-Match"))
-                                        .map(|h| h.value.as_str().to_string())
-                                        .unwrap_or_default();
-                                    if etag_js.is_empty() {
-                                        let response = Response::from_string(js)
-                                            .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/javascript"[..]).unwrap())
-                                            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
-                                        request.respond(response).ok();
-                                    } else if inm == etag_js {
-                                        let response = Response::empty(304)
-                                            .with_header(Header::from_bytes(&b"ETag"[..], etag_js.as_bytes()).unwrap())
-                                            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=31536000, immutable"[..]).unwrap());
-                                        request.respond(response).ok();
-                                    } else {
-                                        let response = Response::from_string(js)
-                                            .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/javascript"[..]).unwrap())
-                                            .with_header(Header::from_bytes(&b"ETag"[..], etag_js.as_bytes()).unwrap())
-                                            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=31536000, immutable"[..]).unwrap());
-                                        request.respond(response).ok();
-                                    }
-                                } else {
-                                    request.respond(Response::from_string("frontend.js not found!").with_status_code(404)).ok();
-                                }
-                            } else if path == "/frontend.build.json" {
-                                if let Some(s) = cached_build_json.clone() {
-                                    let inm = request
-                                        .headers()
-                                        .iter()
-                                        .find(|h| h.field.equiv("If-None-Match"))
-                                        .map(|h| h.value.as_str().to_string())
-                                        .unwrap_or_default();
-                                    if etag_build.is_empty() {
-                                        let response = Response::from_string(s)
-                                            .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-                                            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
-                                        request.respond(response).ok();
-                                    } else if inm == etag_build {
-                                        let response = Response::empty(304)
-                                            .with_header(Header::from_bytes(&b"ETag"[..], etag_build.as_bytes()).unwrap())
-                                            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=31536000, immutable"[..]).unwrap());
-                                        request.respond(response).ok();
-                                    } else {
-                                        let response = Response::from_string(s)
-                                            .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-                                            .with_header(Header::from_bytes(&b"ETag"[..], etag_build.as_bytes()).unwrap())
-                                            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=31536000, immutable"[..]).unwrap());
-                                        request.respond(response).ok();
-                                    }
-                                } else {
-                                    request.respond(Response::from_string("frontend.build.json not found!").with_status_code(404)).ok();
-                                }
-                            } else if path == "/frontend.ssr.html" {
-                                if let Some(s) = cached_ssr_html.clone() {
-                                    let response = Response::from_string(s)
-                                        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap())
-                                        .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
-                                    request.respond(response).ok();
-                                } else {
-                                    request.respond(Response::from_string("frontend.ssr.html not found!").with_status_code(404)).ok();
-                                }
-                            } else if path == "/frontend.ssr.css" {
-                                if let Some(s) = cached_ssr_css.clone() {
-                                    let response = Response::from_string(s)
-                                        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"text/css"[..]).unwrap())
-                                        .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
-                                    request.respond(response).ok();
-                                } else {
-                                    request.respond(Response::from_string("frontend.ssr.css not found!").with_status_code(404)).ok();
-                                }
-                            } else {
-                                request.respond(Response::from_string("404 Not Found").with_status_code(404)).ok();
+</html>"#, state.cached_ssr_css, tailwind_tag, bootstrap_tag, state.cached_ssr_html, h_json, state.build_hash, state.js_hash);
+                                return ([(header::CONTENT_TYPE, "text/html")], html).into_response();
                             }
+
+                            (StatusCode::NOT_FOUND, "404 Not Found").into_response()
                         }
+
+                        let app = Router::new()
+                            .fallback(any(handler))
+                            .with_state(shared_state);
+
+                        let addr = format!("0.0.0.0:{}", port);
+                        println!("[EMA-HTTP] Port {} üzerinde sunucu baslatiliyor...", port);
+                        
+                        let listener = tokio::net::TcpListener::bind(&addr).await.expect("Failed to bind port");
+                        axum::serve(listener, app).await.expect("Failed to start axum server");
+
                         RuntimeValue::Null
                     }
                     (ns, method_str) if ns.chars().next().unwrap().is_uppercase() => {
                         // Custom Native DB Model Interception `Model::insert(...)`
                         match method_str {
                             "insert" => {
-                                let mut values: Vec<SqlValue> = Vec::new();
-                                for arg in args {
-                                    let val = self.eval_expr(arg.clone());
-                                    match val {
-                                        RuntimeValue::StringVal(s) => values.push(SqlValue::Text(s)),
-                                        RuntimeValue::IntVal(i) => values.push(SqlValue::Integer(i)),
-                                        RuntimeValue::FloatVal(f) => values.push(SqlValue::Real(f)),
-                                        RuntimeValue::BoolVal(b) => values.push(SqlValue::Integer(if b { 1 } else { 0 })),
-                                        RuntimeValue::Null => values.push(SqlValue::Null),
-                                        _ => panic!("Model insert args must be primitive (str, int, float, bool)"),
-                                    }
+                                let mut placeholders = Vec::new();
+                                for i in 1..=args.len() {
+                                    placeholders.push(format!("${}", i));
                                 }
-                                
-                                match self.execute_insert_prepared(ns, values) {
+                                let query = format!("INSERT INTO {} VALUES (NULL, {})", ns, placeholders.join(", "));
+                                let mut q = sqlx::query(&query);
+                                for arg in args {
+                                    let val = self.eval_expr(arg.clone()).await;
+                                    q = match val {
+                                        RuntimeValue::StringVal(s) => q.bind(s),
+                                        RuntimeValue::IntVal(i) => q.bind(i),
+                                        RuntimeValue::FloatVal(f) => q.bind(f),
+                                        RuntimeValue::BoolVal(b) => q.bind(b as i64),
+                                        _ => q.bind(None::<String>),
+                                    };
+                                }
+                                match q.execute(&self.db_pool).await {
                                     Ok(_) => {
-                                        println!("[EMA-DB] [{}] INSERT prepared", ns);
+                                        println!("[EMA-DB] [{}] INSERT executed", ns);
                                         RuntimeValue::BoolVal(true)
                                     },
                                     Err(e) => panic!("DB insert error ({}): {}", ns, e),
@@ -1202,20 +1063,20 @@ impl Interpreter {
                             }
                             "all" => {
                                 // Returns JSON array string of rows.
-                                RuntimeValue::StringVal(self.model_all_json(&ns))
+                                RuntimeValue::StringVal(self.model_all_json(&ns).await)
                             }
                             "find" => {
                                 if args.len() != 1 {
                                     panic!("Model::find(id) expects 1 argument");
                                 }
-                                let id_val = self.eval_expr(args[0].clone());
+                                let id_val = self.eval_expr(args[0].clone()).await;
                                 let id = match id_val {
                                     RuntimeValue::IntVal(i) => i,
                                     RuntimeValue::FloatVal(f) => f as i64,
                                     RuntimeValue::StringVal(s) => s.parse::<i64>().unwrap_or(0),
                                     _ => 0,
                                 };
-                                RuntimeValue::StringVal(self.model_find_json(&ns, id))
+                                RuntimeValue::StringVal(self.model_find_json(&ns, id).await)
                             }
                             _ => panic!("Unsupported model method: {}::{}", ns, method_str),
                         }
@@ -1224,8 +1085,8 @@ impl Interpreter {
                 }
             }
             Expr::Binary { left, op, right, .. } => {
-                let left_val = self.eval_expr(*left);
-                let right_val = self.eval_expr(*right);
+                let left_val = self.eval_expr(*left).await;
+                let right_val = self.eval_expr(*right).await;
 
                 match (left_val, op, right_val) {
                     (RuntimeValue::IntVal(l), BinaryOp::Add, RuntimeValue::IntVal(r)) => RuntimeValue::IntVal(l + r),
@@ -1267,24 +1128,26 @@ impl Interpreter {
             }
             Expr::EmbeddedBlock { kind, raw, span: _ } => {
                 match kind {
-                    EmbeddedKind::Php => self.eval_php_block(&raw),
+                    EmbeddedKind::Php => self.eval_php_block(&raw).await,
                     _ => RuntimeValue::Null,
                 }
             }
             Expr::PhpAst { program, .. } => {
-                self.eval_php_program_ast(&program)
+                self.eval_php_program_ast(&program).await
             }
             Expr::HtmlAst { .. } | Expr::CssAst { .. } | Expr::JsAst { .. } => {
                 // Parsed client-side artifacts are handled by wasm_builder.
                 RuntimeValue::Null
             }
             Expr::Interpolation(inner, _) => {
-                self.eval_expr(*inner)
+                self.eval_expr(*inner).await
             }
+            _ => RuntimeValue::Null,
         }
+    })
     }
 
-    fn eval_php_block(&mut self, raw: &str) -> RuntimeValue {
+    async fn eval_php_block(&mut self, raw: &str) -> RuntimeValue {
         let mut code = raw.trim().to_string();
         if code.starts_with("<?php") {
             code = code.trim_start_matches("<?php").to_string();
@@ -1306,7 +1169,7 @@ impl Interpreter {
         let prog = parser.parse_program();
         let mut out = None;
         for s in prog {
-            self.eval_php_stmt(s, &mut out);
+            self.eval_php_stmt(s, &mut out).await;
         }
         RuntimeValue::Null
     }
@@ -1368,7 +1231,7 @@ impl Interpreter {
                 };
                 PhpExpr::Binary { left: Box::new(self.lower_php_expr(left)), op: bop, right: Box::new(self.lower_php_expr(right)) }
             }
-            AstPhpExpr::ArrayLit { items, .. } => PhpExpr::ArrayLit(items.iter().map(|x| self.lower_php_expr(x)).collect()),
+            AstPhpExpr::ArrayLit { items, .. } => PhpExpr::ArrayLit(items.iter().map(|(_, x)| self.lower_php_expr(x)).collect()),
             AstPhpExpr::ObjectLit { props, .. } => PhpExpr::ObjectLit(
                 props.iter().map(|(k, v)| (k.clone(), self.lower_php_expr(v))).collect()
             ),
@@ -1376,94 +1239,66 @@ impl Interpreter {
                 target: Box::new(self.lower_php_expr(target)),
                 index: Box::new(self.lower_php_expr(index)),
             },
+            _ => PhpExpr::Null,
         }
     }
 
-    fn eval_php_program_ast(&mut self, prog: &AstPhpProgram) -> RuntimeValue {
+    pub async fn eval_php_program_ast(&mut self, prog: &AstPhpProgram) -> RuntimeValue {
         let stmts = self.lower_php_program(prog);
         let mut out = None;
         for s in stmts {
-            self.eval_php_stmt(s, &mut out);
+            self.eval_php_stmt(s, &mut out).await;
         }
         RuntimeValue::Null
     }
 
-    fn eval_php_stmt(&mut self, stmt: PhpStmt, out: &mut Option<String>) {
-        match stmt {
-            PhpStmt::Echo(e) => {
-                let v = self.eval_php_expr_ast(e);
-                self.php_emit(v, out);
-            }
-            PhpStmt::Print(e) => {
-                let v = self.eval_php_expr_ast(e);
-                self.php_emit(v, out);
-            }
-            PhpStmt::Expr(e) => {
-                self.eval_php_expr_ast(e);
-            }
-            PhpStmt::Assign { name, value } => {
-                let v = self.eval_php_expr_ast(value);
-                self.env.define(name, v);
-            }
-            PhpStmt::If { condition, then_branch, else_branch } => {
-                let cond = self.eval_php_expr_ast(condition);
-                let is_true = match cond {
-                    RuntimeValue::BoolVal(b) => b,
-                    RuntimeValue::IntVal(i) => i != 0,
-                    RuntimeValue::FloatVal(f) => f != 0.0,
-                    RuntimeValue::StringVal(s) => !s.is_empty(),
-                    RuntimeValue::Null => false,
-                    _ => false,
-                };
-                if is_true {
-                    for s in then_branch {
-                        self.eval_php_stmt(s, out);
-                    }
-                } else if let Some(stmts) = else_branch {
-                    for s in stmts {
-                        self.eval_php_stmt(s, out);
-                    }
+    pub fn eval_php_stmt<'a>(&'a mut self, stmt: PhpStmt, out: &'a mut Option<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            match stmt {
+                PhpStmt::Echo(e) => {
+                    let v = self.eval_php_expr_ast(e).await;
+                    self.php_emit(v, out);
                 }
-            }
-            PhpStmt::While { condition, body } => {
-                // Basic runaway protection for the subset runtime.
-                let mut iters = 0usize;
-                loop {
-                    iters += 1;
-                    if iters > 100_000 {
-                        panic!("PHP while-loop exceeded iteration limit");
-                    }
-                    let cond = self.eval_php_expr_ast(condition.clone());
+                PhpStmt::Print(e) => {
+                    let v = self.eval_php_expr_ast(e).await;
+                    self.php_emit(v, out);
+                }
+                PhpStmt::Expr(e) => {
+                    self.eval_php_expr_ast(e).await;
+                }
+                PhpStmt::Assign { name, value } => {
+                    let v = self.eval_php_expr_ast(value).await;
+                    self.env.define(name, v);
+                }
+                PhpStmt::If { condition, then_branch, else_branch } => {
+                    let cond = self.eval_php_expr_ast(condition).await;
                     let is_true = match cond {
                         RuntimeValue::BoolVal(b) => b,
                         RuntimeValue::IntVal(i) => i != 0,
                         RuntimeValue::FloatVal(f) => f != 0.0,
                         RuntimeValue::StringVal(s) => !s.is_empty(),
-                        RuntimeValue::JsonVal(v) => !v.is_null() && v != JsonValue::Bool(false) && v != JsonValue::String(String::new()),
                         RuntimeValue::Null => false,
                         _ => false,
                     };
-                    if !is_true {
-                        break;
-                    }
-                    for s in body.clone() {
-                        self.eval_php_stmt(s, out);
+                    if is_true {
+                        for s in then_branch {
+                            self.eval_php_stmt(s, out).await;
+                        }
+                    } else if let Some(stmts) = else_branch {
+                        for s in stmts {
+                            self.eval_php_stmt(s, out).await;
+                        }
                     }
                 }
-            }
-            PhpStmt::For { init, condition, update, body } => {
-                if let Some(s) = init {
-                    self.eval_php_stmt(*s, out);
-                }
-                let mut iters = 0usize;
-                loop {
-                    iters += 1;
-                    if iters > 100_000 {
-                        panic!("PHP for-loop exceeded iteration limit");
-                    }
-                    if let Some(cond_e) = condition.clone() {
-                        let cond_v = self.eval_php_expr_ast(cond_e);
-                        let is_true = match cond_v {
+                PhpStmt::While { condition, body } => {
+                    let mut iters = 0usize;
+                    loop {
+                        iters += 1;
+                        if iters > 100_000 {
+                            panic!("PHP while-loop exceeded iteration limit");
+                        }
+                        let cond = self.eval_php_expr_ast(condition.clone()).await;
+                        let is_true = match cond {
                             RuntimeValue::BoolVal(b) => b,
                             RuntimeValue::IntVal(i) => i != 0,
                             RuntimeValue::FloatVal(f) => f != 0.0,
@@ -1472,17 +1307,47 @@ impl Interpreter {
                             RuntimeValue::Null => false,
                             _ => false,
                         };
-                        if !is_true { break; }
+                        if !is_true {
+                            break;
+                        }
+                        for s in body.clone() {
+                            self.eval_php_stmt(s, out).await;
+                        }
                     }
-                    for s in body.clone() {
-                        self.eval_php_stmt(s, out);
+                }
+                PhpStmt::For { init, condition, update, body } => {
+                    if let Some(s) = init {
+                        self.eval_php_stmt(*s, out).await;
                     }
-                    if let Some(upd) = update.clone() {
-                        self.eval_php_expr_ast(upd);
+                    let mut iters = 0usize;
+                    loop {
+                        iters += 1;
+                        if iters > 100_000 {
+                            panic!("PHP for-loop exceeded iteration limit");
+                        }
+                        if let Some(cond_e) = condition.clone() {
+                            let cond_v = self.eval_php_expr_ast(cond_e).await;
+                            let is_true = match cond_v {
+                                RuntimeValue::BoolVal(b) => b,
+                                RuntimeValue::IntVal(i) => i != 0,
+                                RuntimeValue::FloatVal(f) => f != 0.0,
+                                RuntimeValue::StringVal(s) => !s.is_empty(),
+                                RuntimeValue::JsonVal(v) => !v.is_null() && v != JsonValue::Bool(false) && v != JsonValue::String(String::new()),
+                                RuntimeValue::Null => false,
+                                _ => false,
+                            };
+                            if !is_true { break; }
+                        }
+                        for s in body.clone() {
+                            self.eval_php_stmt(s, out).await;
+                        }
+                        if let Some(upd) = update.clone() {
+                            self.eval_php_expr_ast(upd).await;
+                        }
                     }
                 }
             }
-        }
+        })
     }
 
     fn php_emit(&self, v: RuntimeValue, out: &mut Option<String>) {
@@ -1494,7 +1359,7 @@ impl Interpreter {
         self.print_runtime_value(v);
     }
 
-    fn eval_php_http_handler(
+    async fn eval_php_http_handler(
         &mut self,
         handler: &PhpHandler,
         query: &HashMap<String, String>,
@@ -1542,7 +1407,7 @@ impl Interpreter {
 
                 let mut out = Some(String::new());
                 for s in prog {
-                    self.eval_php_stmt(s, &mut out);
+                    self.eval_php_stmt(s, &mut out).await;
                 }
                 out.unwrap_or_default()
             }
@@ -1550,7 +1415,7 @@ impl Interpreter {
                 let stmts = self.lower_php_program(prog);
                 let mut out = Some(String::new());
                 for s in stmts {
-                    self.eval_php_stmt(s, &mut out);
+                    self.eval_php_stmt(s, &mut out).await;
                 }
                 out.unwrap_or_default()
             }
@@ -1637,167 +1502,180 @@ impl Interpreter {
         (raw, map)
     }
 
-    fn eval_php_expr_ast(&mut self, expr: PhpExpr) -> RuntimeValue {
-        match expr {
-            PhpExpr::Var(name) => self.env.get(&name).unwrap_or(RuntimeValue::Null),
-            PhpExpr::String(s) => RuntimeValue::StringVal(s),
-            PhpExpr::Int(i) => RuntimeValue::IntVal(i),
-            PhpExpr::Float(f) => RuntimeValue::FloatVal(f),
-            PhpExpr::Bool(b) => RuntimeValue::BoolVal(b),
-            PhpExpr::Null => RuntimeValue::Null,
-            PhpExpr::ArrayLit(items) => {
-                let arr: Vec<JsonValue> = items.into_iter().map(|e| self.eval_php_expr_ast(e).to_json()).collect();
-                RuntimeValue::JsonVal(JsonValue::Array(arr))
-            }
-            PhpExpr::ObjectLit(props) => {
-                let mut obj = serde_json::Map::new();
-                for (k, v) in props {
-                    obj.insert(k, self.eval_php_expr_ast(v).to_json());
+    pub fn eval_php_expr_ast<'a>(&'a mut self, expr: PhpExpr) -> std::pin::Pin<Box<dyn std::future::Future<Output = RuntimeValue> + Send + 'a>> {
+        Box::pin(async move {
+            match expr {
+                PhpExpr::Var(name) => self.env.get(&name).unwrap_or(RuntimeValue::Null),
+                PhpExpr::String(s) => RuntimeValue::StringVal(s),
+                PhpExpr::Int(i) => RuntimeValue::IntVal(i),
+                PhpExpr::Float(f) => RuntimeValue::FloatVal(f),
+                PhpExpr::Bool(b) => RuntimeValue::BoolVal(b),
+                PhpExpr::Null => RuntimeValue::Null,
+                PhpExpr::ArrayLit(items) => {
+                    let mut list = Vec::new();
+                    for e in items {
+                        list.push(self.eval_php_expr_ast(e).await.to_json());
+                    }
+                    RuntimeValue::JsonVal(JsonValue::Array(list))
                 }
-                RuntimeValue::JsonVal(JsonValue::Object(obj))
-            }
-            PhpExpr::Index { target, index } => {
-                let t = self.eval_php_expr_ast(*target).to_json();
-                let idx_v = self.eval_php_expr_ast(*index);
-                match (t, idx_v) {
-                    (JsonValue::Array(a), RuntimeValue::IntVal(i)) => {
-                        let i = i as usize;
-                        a.get(i).cloned().map(RuntimeValue::JsonVal).unwrap_or(RuntimeValue::Null)
+                PhpExpr::ObjectLit(props) => {
+                    let mut obj = serde_json::Map::new();
+                    for (k, v) in props {
+                        obj.insert(k, self.eval_php_expr_ast(v).await.to_json());
                     }
-                    (JsonValue::Array(a), RuntimeValue::StringVal(s)) => {
-                        let i = s.parse::<usize>().unwrap_or(usize::MAX);
-                        a.get(i).cloned().map(RuntimeValue::JsonVal).unwrap_or(RuntimeValue::Null)
-                    }
-                    (JsonValue::Object(o), RuntimeValue::StringVal(k)) => {
-                        o.get(&k).cloned().map(RuntimeValue::JsonVal).unwrap_or(RuntimeValue::Null)
-                    }
-                    _ => RuntimeValue::Null,
+                    RuntimeValue::JsonVal(JsonValue::Object(obj))
                 }
-            }
-            PhpExpr::Call { name, args } => {
-                let evaled: Vec<RuntimeValue> = args.into_iter().map(|a| self.eval_php_expr_ast(a)).collect();
-                match name.as_str() {
-                    "json_encode" => {
-                        let v = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
-                        let json_v = v.to_json();
-                        let s = serde_json::to_string(&json_v).unwrap_or("null".to_string());
-                        RuntimeValue::StringVal(s)
+                PhpExpr::Index { target, index } => {
+                    let t = self.eval_php_expr_ast(*target).await.to_json();
+                    let idx_v = self.eval_php_expr_ast(*index).await;
+                    match (t, idx_v) {
+                        (JsonValue::Array(a), RuntimeValue::IntVal(i)) => {
+                            let i = i as usize;
+                            a.get(i).cloned().map(RuntimeValue::JsonVal).unwrap_or(RuntimeValue::Null)
+                        }
+                        (JsonValue::Array(a), RuntimeValue::StringVal(s)) => {
+                            let i = s.parse::<usize>().unwrap_or(usize::MAX);
+                            a.get(i).cloned().map(RuntimeValue::JsonVal).unwrap_or(RuntimeValue::Null)
+                        }
+                        (JsonValue::Object(o), RuntimeValue::StringVal(k)) => {
+                            o.get(&k).cloned().map(RuntimeValue::JsonVal).unwrap_or(RuntimeValue::Null)
+                        }
+                        _ => RuntimeValue::Null,
                     }
-                    "db_all" => {
-                        let model = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
-                        let m = self.php_to_string(model);
-                        RuntimeValue::StringVal(self.model_all_json(&m))
+                }
+                PhpExpr::Call { name, args } => {
+                    let mut evaled = Vec::new();
+                    for a in args {
+                        evaled.push(self.eval_php_expr_ast(a).await);
                     }
-                    "db_find" => {
-                        let model = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
-                        let idv = evaled.get(1).cloned().unwrap_or(RuntimeValue::Null);
-                        let m = self.php_to_string(model);
-                        let id = match idv {
-                            RuntimeValue::IntVal(i) => i,
-                            RuntimeValue::FloatVal(f) => f as i64,
-                            RuntimeValue::StringVal(s) => s.parse::<i64>().unwrap_or(0),
-                            RuntimeValue::BoolVal(b) => if b { 1 } else { 0 },
-                            RuntimeValue::Null => 0,
-                            _ => 0,
-                        };
-                        RuntimeValue::StringVal(self.model_find_json(&m, id))
-                    }
-                    "db_insert" => {
-                        let model = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
-                        let m = self.php_to_string(model);
-                        let mut values: Vec<SqlValue> = Vec::new();
-                        for v in evaled.into_iter().skip(1) {
-                            match v {
-                                RuntimeValue::StringVal(s) => values.push(SqlValue::Text(s)),
-                                RuntimeValue::IntVal(i) => values.push(SqlValue::Integer(i)),
-                                RuntimeValue::FloatVal(f) => values.push(SqlValue::Real(f)),
-                                RuntimeValue::BoolVal(b) => values.push(SqlValue::Integer(if b { 1 } else { 0 })),
-                                RuntimeValue::Null => values.push(SqlValue::Null),
-                                _ => values.push(SqlValue::Null),
+                    match name.as_str() {
+                        "json_encode" => {
+                            let v = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
+                            let json_v = v.to_json();
+                            let s = serde_json::to_string(&json_v).unwrap_or("null".to_string());
+                            RuntimeValue::StringVal(s)
+                        }
+                        "db_all" => {
+                            let model = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
+                            let m = self.php_to_string(model);
+                            RuntimeValue::StringVal(self.model_all_json(&m).await)
+                        }
+                        "db_find" => {
+                            let model = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
+                            let idv = evaled.get(1).cloned().unwrap_or(RuntimeValue::Null);
+                            let m = self.php_to_string(model);
+                            let id = match idv {
+                                RuntimeValue::IntVal(i) => i,
+                                RuntimeValue::FloatVal(f) => f as i64,
+                                RuntimeValue::StringVal(s) => s.parse::<i64>().unwrap_or(0),
+                                RuntimeValue::BoolVal(b) => if b { 1 } else { 0 },
+                                RuntimeValue::Null => 0,
+                                _ => 0,
+                            };
+                            RuntimeValue::StringVal(self.model_find_json(&m, id).await)
+                        }
+                        "db_insert" => {
+                            let model = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
+                            let m = self.php_to_string(model);
+                            let mut placeholders = Vec::new();
+                            let values_to_bind: Vec<RuntimeValue> = evaled.into_iter().skip(1).collect();
+                            for i in 1..=values_to_bind.len() {
+                                placeholders.push(format!("${}", i));
+                            }
+                            let query = format!("INSERT INTO {} VALUES (NULL, {})", m, placeholders.join(", "));
+                            let mut q = sqlx::query(&query);
+                            for val in values_to_bind {
+                                q = match val {
+                                    RuntimeValue::StringVal(s) => q.bind(s),
+                                    RuntimeValue::IntVal(i) => q.bind(i),
+                                    RuntimeValue::FloatVal(f) => q.bind(f),
+                                    RuntimeValue::BoolVal(b) => q.bind(b as i64),
+                                    _ => q.bind(None::<String>),
+                                };
+                            }
+                            match q.execute(&self.db_pool).await {
+                                Ok(_) => RuntimeValue::BoolVal(true),
+                                Err(_) => RuntimeValue::BoolVal(false),
                             }
                         }
-                        match self.execute_insert_prepared(&m, values) {
-                            Ok(_) => RuntimeValue::BoolVal(true),
-                            Err(_) => RuntimeValue::BoolVal(false),
+                        "isset" => {
+                            let v = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
+                            RuntimeValue::BoolVal(!matches!(v, RuntimeValue::Null))
                         }
-                    }
-                    "isset" => {
-                        let v = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
-                        RuntimeValue::BoolVal(!matches!(v, RuntimeValue::Null))
-                    }
-                    "str" => {
-                        let v = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
-                        RuntimeValue::StringVal(self.php_to_string(v))
-                    }
-                    "int" => {
-                        let v = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
-                        match v {
-                            RuntimeValue::IntVal(i) => RuntimeValue::IntVal(i),
-                            RuntimeValue::FloatVal(f) => RuntimeValue::IntVal(f as i64),
-                            RuntimeValue::BoolVal(b) => RuntimeValue::IntVal(if b { 1 } else { 0 }),
-                            RuntimeValue::StringVal(s) => RuntimeValue::IntVal(s.trim().parse::<i64>().unwrap_or(0)),
-                            RuntimeValue::Null => RuntimeValue::IntVal(0),
-                            _ => RuntimeValue::IntVal(0),
+                        "str" => {
+                            let v = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
+                            RuntimeValue::StringVal(self.php_to_string(v))
                         }
-                    }
-                    "json_object" => {
-                        let mut obj = serde_json::Map::new();
-                        let mut i = 0usize;
-                        while i + 1 < evaled.len() {
-                            let k = self.php_to_string(evaled[i].clone());
-                            let v = evaled[i + 1].clone().to_json();
-                            obj.insert(k, v);
-                            i += 2;
+                        "int" => {
+                            let v = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
+                            match v {
+                                RuntimeValue::IntVal(i) => RuntimeValue::IntVal(i),
+                                RuntimeValue::FloatVal(f) => RuntimeValue::IntVal(f as i64),
+                                RuntimeValue::BoolVal(b) => RuntimeValue::IntVal(if b { 1 } else { 0 }),
+                                RuntimeValue::StringVal(s) => RuntimeValue::IntVal(s.trim().parse::<i64>().unwrap_or(0)),
+                                RuntimeValue::Null => RuntimeValue::IntVal(0),
+                                _ => RuntimeValue::IntVal(0),
+                            }
                         }
-                        let json_v = JsonValue::Object(obj);
-                        let s = serde_json::to_string(&json_v).unwrap_or("{}".to_string());
-                        RuntimeValue::StringVal(s)
+                        "json_object" => {
+                            let mut obj = serde_json::Map::new();
+                            let mut i = 0usize;
+                            while i + 1 < evaled.len() {
+                                let k = self.php_to_string(evaled[i].clone());
+                                let v = evaled[i + 1].clone().to_json();
+                                obj.insert(k, v);
+                                i += 2;
+                            }
+                            let json_v = JsonValue::Object(obj);
+                            let s = serde_json::to_string(&json_v).unwrap_or("{}".to_string());
+                            RuntimeValue::StringVal(s)
+                        }
+                        "json_array" => {
+                            let arr: Vec<JsonValue> = evaled.into_iter().map(|v| v.to_json()).collect();
+                            let s = serde_json::to_string(&JsonValue::Array(arr)).unwrap_or("[]".to_string());
+                            RuntimeValue::StringVal(s)
+                        }
+                        "hydrate" => {
+                            let key = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
+                            let val = evaled.get(1).cloned().unwrap_or(RuntimeValue::Null);
+                            let k = self.php_to_string(key);
+                            self.hydration_state.insert(k, val);
+                            RuntimeValue::Null
+                        }
+                        _ => RuntimeValue::Null,
                     }
-                    "json_array" => {
-                        let arr: Vec<JsonValue> = evaled.into_iter().map(|v| v.to_json()).collect();
-                        let s = serde_json::to_string(&JsonValue::Array(arr)).unwrap_or("[]".to_string());
-                        RuntimeValue::StringVal(s)
+                }
+                PhpExpr::Binary { left, op, right } => {
+                    let l = self.eval_php_expr_ast(*left).await;
+                    let r = self.eval_php_expr_ast(*right).await;
+                    match op {
+                        PhpBinOp::Concat => RuntimeValue::StringVal(format!("{}{}", self.php_to_string(l), self.php_to_string(r))),
+                        PhpBinOp::Add => match (l, r) {
+                            (RuntimeValue::IntVal(a), RuntimeValue::IntVal(b)) => RuntimeValue::IntVal(a + b),
+                            (RuntimeValue::FloatVal(a), RuntimeValue::FloatVal(b)) => RuntimeValue::FloatVal(a + b),
+                            (RuntimeValue::IntVal(a), RuntimeValue::FloatVal(b)) => RuntimeValue::FloatVal(a as f64 + b),
+                            (RuntimeValue::FloatVal(a), RuntimeValue::IntVal(b)) => RuntimeValue::FloatVal(a + b as f64),
+                            _ => RuntimeValue::Null,
+                        },
+                        PhpBinOp::Sub => match (l, r) {
+                            (RuntimeValue::IntVal(a), RuntimeValue::IntVal(b)) => RuntimeValue::IntVal(a - b),
+                            (RuntimeValue::FloatVal(a), RuntimeValue::FloatVal(b)) => RuntimeValue::FloatVal(a - b),
+                            (RuntimeValue::IntVal(a), RuntimeValue::FloatVal(b)) => RuntimeValue::FloatVal(a as f64 - b),
+                            (RuntimeValue::FloatVal(a), RuntimeValue::IntVal(b)) => RuntimeValue::FloatVal(a - b as f64),
+                            _ => RuntimeValue::Null,
+                        },
+                        PhpBinOp::EqEq => RuntimeValue::BoolVal(self.php_equals(&l, &r)),
+                        PhpBinOp::BangEq => RuntimeValue::BoolVal(!self.php_equals(&l, &r)),
+                        PhpBinOp::Less => RuntimeValue::BoolVal(self.php_cmp(&l, &r, |a, b| a < b)),
+                        PhpBinOp::LessEq => RuntimeValue::BoolVal(self.php_cmp(&l, &r, |a, b| a <= b)),
+                        PhpBinOp::Greater => RuntimeValue::BoolVal(self.php_cmp(&l, &r, |a, b| a > b)),
+                        PhpBinOp::GreaterEq => RuntimeValue::BoolVal(self.php_cmp(&l, &r, |a, b| a >= b)),
+                        PhpBinOp::AndAnd => RuntimeValue::BoolVal(self.php_truthy(&l) && self.php_truthy(&r)),
+                        PhpBinOp::OrOr => RuntimeValue::BoolVal(self.php_truthy(&l) || self.php_truthy(&r)),
                     }
-                    "hydrate" => {
-                        let key = evaled.get(0).cloned().unwrap_or(RuntimeValue::Null);
-                        let val = evaled.get(1).cloned().unwrap_or(RuntimeValue::Null);
-                        let k = self.php_to_string(key);
-                        self.hydration_state.insert(k, val);
-                        RuntimeValue::Null
-                    }
-                    _ => RuntimeValue::Null,
                 }
             }
-            PhpExpr::Binary { left, op, right } => {
-                let l = self.eval_php_expr_ast(*left);
-                let r = self.eval_php_expr_ast(*right);
-                match op {
-                    PhpBinOp::Concat => RuntimeValue::StringVal(format!("{}{}", self.php_to_string(l), self.php_to_string(r))),
-                    PhpBinOp::Add => match (l, r) {
-                        (RuntimeValue::IntVal(a), RuntimeValue::IntVal(b)) => RuntimeValue::IntVal(a + b),
-                        (RuntimeValue::FloatVal(a), RuntimeValue::FloatVal(b)) => RuntimeValue::FloatVal(a + b),
-                        (RuntimeValue::IntVal(a), RuntimeValue::FloatVal(b)) => RuntimeValue::FloatVal(a as f64 + b),
-                        (RuntimeValue::FloatVal(a), RuntimeValue::IntVal(b)) => RuntimeValue::FloatVal(a + b as f64),
-                        _ => RuntimeValue::Null,
-                    },
-                    PhpBinOp::Sub => match (l, r) {
-                        (RuntimeValue::IntVal(a), RuntimeValue::IntVal(b)) => RuntimeValue::IntVal(a - b),
-                        (RuntimeValue::FloatVal(a), RuntimeValue::FloatVal(b)) => RuntimeValue::FloatVal(a - b),
-                        (RuntimeValue::IntVal(a), RuntimeValue::FloatVal(b)) => RuntimeValue::FloatVal(a as f64 - b),
-                        (RuntimeValue::FloatVal(a), RuntimeValue::IntVal(b)) => RuntimeValue::FloatVal(a - b as f64),
-                        _ => RuntimeValue::Null,
-                    },
-                    PhpBinOp::EqEq => RuntimeValue::BoolVal(self.php_equals(&l, &r)),
-                    PhpBinOp::BangEq => RuntimeValue::BoolVal(!self.php_equals(&l, &r)),
-                    PhpBinOp::Less => RuntimeValue::BoolVal(self.php_cmp(&l, &r, |a, b| a < b)),
-                    PhpBinOp::LessEq => RuntimeValue::BoolVal(self.php_cmp(&l, &r, |a, b| a <= b)),
-                    PhpBinOp::Greater => RuntimeValue::BoolVal(self.php_cmp(&l, &r, |a, b| a > b)),
-                    PhpBinOp::GreaterEq => RuntimeValue::BoolVal(self.php_cmp(&l, &r, |a, b| a >= b)),
-                    PhpBinOp::AndAnd => RuntimeValue::BoolVal(self.php_truthy(&l) && self.php_truthy(&r)),
-                    PhpBinOp::OrOr => RuntimeValue::BoolVal(self.php_truthy(&l) || self.php_truthy(&r)),
-                }
-            }
-        }
+        })
     }
 
     fn php_truthy(&self, v: &RuntimeValue) -> bool {

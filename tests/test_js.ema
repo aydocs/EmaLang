@@ -1,0 +1,27 @@
+@server {
+    js {
+        class Greeter {
+            constructor(msg) {
+                this.msg = msg;
+            }
+            sayHello() {
+                return "JS says: " + this.msg;
+            }
+        }
+
+        const g = new Greeter("Hello Ema ES2024!");
+        console.log(g.sayHello());
+
+        const x = 1;
+        switch(x) {
+            case 1: console.log("Matched 1"); break;
+            default: console.log("Default Case");
+        }
+
+        for (let i = 0; i < 5; i++) {
+            if (i === 2) continue;
+            if (i === 4) break;
+            console.log("Loop: " + i);
+        }
+    }
+}

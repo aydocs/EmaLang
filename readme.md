@@ -1,94 +1,76 @@
-# EmaLang
-<div align="center">
+# EMA Programming Language (Evren Mimari)
 
-<img src="docs/assets/logo.png" width="200" height="200" />
+EMA, modern web teknolojilerini (HTML, CSS, JS, PHP) tek bir ekosistemde birleştiren, yüksek performanslı ve geliştirici dostu bir programlama dilidir.
 
-# 💎 EMA: THE UNIVERSAL FULL-STACK ECOSYSTEM
-### *HTML, CSS, JS & PHP Replacement Language*
+## 🚀 Hızlı Başlangıç
 
-[![GitHub Stars](https://img.shields.io/github/stars/emadocstechnologies/emalangLang?style=for-the-badge&color=818cf8)](https://github.com/emadocstechnologies/emalangLang/stargazers)
-[![GitHub License](https://img.shields.io/github/license/emadocstechnologies/emalangLang?style=for-the-badge&color=38bdf8)](https://opensource.org/licenses/MIT)
-[![Build](https://img.shields.io/badge/Build-Stable-10b981?style=for-the-badge)]()
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-f1f5f9?style=for-the-badge)]()
-[![Documentation](https://img.shields.io/badge/Docs-emadocs.com-a78bfa?style=for-the-badge&logo=docsdotrs)](https://emadocs.com)
+EMA'yı sisteminize kurduktan sonra (NPM üzerinden `npm install -g emalang`), yeni bir projeye saniyeler içinde başlayabilirsiniz:
 
-**One Language. One Compiler. Zero HTML/JS Dependencies.**
+```bash
+# Yeni bir proje başlat
+ema init
 
-🚀 **[Official Repository](https://github.com/emadocstechnologies/emalangLang)**
+# REPL Modunda çalıştır (İnteraktif)
+ema
+# veya
+ema repl
 
-EMA is a high-performance programming language designed to unify the entire web stack into a single, cohesive syntax. It allows developers to build systems ranging from native database engines to reactive web dashboards without switching languages.
+# Projeyi çalıştır
+ema ema/project.ema
+```
 
-</div>
+## ✨ Temel Özellikler
 
----
+- **Birleşik Ekosistem**: HTML, CSS, JS ve PHP mantığını tek bir `.ema` dosyasında kullanın.
+- **Modern JavaScript**: `async/await`, `arrow functions` ve ES6+ özelliklerini tam destekler.
+- **Akıllı CSS**: Her bileşene özel (Scoped) CSS ile çakışmaları önleyin.
+- **Güçlü Backend**: Rust hızında çalışan backend motoru ve PHP tarzı kolay sözdizimi.
+- **Dinamik Port**: Port 3000 doluysa otomatik olarak bir üst portu (3001, 3002...) bulur ve oradan başlar.
+- **Temiz CLI**: `--verbose` flag'i ile sadece ihtiyacınız olan logları görün.
 
-## 🏗️ THE UNIFIED STACK
-EMA replaces the traditional web stack (HTML/CSS/JS/PHP) with a native, type-safe architecture.
+## 🛠 Standart Kütüphane (StdLib)
 
-- **Frontend (`@client`)**: Compiles to optimized WebAssembly. Supports declarative UI with native CSS-in-EMA styling.
-- **Backend (`@server`)**: Direct LLVM machine code. Integrated with EMA-DB (SQLite) for zero-latency persistence.
-- **Live Hydration**: Automatic state synchronization between server models and client-side UI.
+EMA, geliştirme sürecini hızlandıran zengin bir standart kütüphane ile gelir:
 
----
+### `std::http`
+- `serve()`: Sunucuyu başlatır (Varsayılan: 3000).
+- `route(method, path, handler)`: API rotaları tanımlar.
 
-## 🌍 CODE EXAMPLE (Full-Stack Dashboard)
-A single `.ema` file manages your database, network, and UI simultaneously.
+### `std::db`
+- `migrate()`: Veritabanı şemasını oluşturur/günceller.
+- `registerModel(name, fields)`: Veri modelleri tanımlar.
+
+### `std::file` (veya `std::fs`)
+- `read(path)`: Dosya içeriğini okur.
+- `write(path, content)`: Dosyaya yazar.
+- `exists(path)`: Dosyanın varlığını kontrol eder.
+- `delete(path)`: Dosyayı siler.
+
+### `std::json`
+- `parse(string)`: JSON string'ini EMA nesnesine dönüştürür.
+- `stringify(value)`: EMA değerini JSON string'ine dönüştürür.
+
+## 🎨 Örnek Kod
 
 ```ema
-model User { name: str, level: int }
-
 @server {
-    print "Server logic: Initializing database...";
-    User::insert("Evren Mimar", 99);
+    print "Backend calisiyor...";
+    std::http::serve();
 }
 
 @client {
-    state user_name = "Evren Mimar";
-    state version = 4.0;
-
-    <div style: "background: #0f2027; color: white; padding: 40px; border-radius: 20px;">
-        <h1> "EMA-LIVE DASHBOARD" </h1>
-        <p> "Welcome, " {{ user_name }} </p>
-        <p> "Running on EMA v" {{ version }} </p>
-        <button onclick: "alert('EMA Active!')"> "Launch System" </button>
+    <div style: "padding: 20px; color: blue;">
+        <h1> "Selam Ema!" </h1>
+        js {
+            async function selamlama() {
+                const res = await fetch("https://api.example.com");
+                console.log("Veri geldi!");
+            };
+            selamlama();
+        };
     </div>;
 }
 ```
 
----
-
-## 🛠️ CORE FEATURES
-- **Reactive State**: Use the `state` keyword for automatic UI updates.
-- **Interpolation**: Double-brace `{{ ... }}` syntax for dynamic data binding.
-- **Integrated DB**: Models are first-class citizens with auto-migration.
-- **std::http**: Built-in high-performance web server capability.
-- **Static Analysis**: Semantic checker ensures type safety across the entire stack.
-
----
-
-## 🚀 QUICK START
-```bash
-# Clone the repository
-git clone https://github.com/emadocstechnologies/emalangLang.git
-cd EmaDocs
-
-# Run the unified dashboard example
-cargo run -- ema/example.ema
-```
-
----
-
-## 🔮 THE ROADMAP
-- [x] **Phase 1-3**: Core Compiler & Declarative UI Infrastructure.
-- [x] **Phase 4**: EMA-Live (SSR, Hydration & Reactive State).
-- [/] **Phase 5**: Ownership & Borrowing (Rust-like memory safety).
-- [ ] **Phase 6**: Advanced LLVM Link-Time Optimizations.
-
----
-
-<div align="center">
-
-**Developed with 💜 by the EmaDocs Team.**
-*HTML is history. JS is a choice. EMA is the future.*
-
-</div>
+## 📜 Lisans
+Bu proje Evren Mimarları tarafından geliştirilmiştir.

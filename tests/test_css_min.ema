@@ -1,0 +1,7 @@
+@client {
+    state theme_color = "#3498db";
+    <div --bg-color={{ theme_color }}
+         css{ background: var(--bg-color); }>
+        <h1>CSS Test</h1>
+    </div>
+}

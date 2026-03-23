@@ -59,6 +59,18 @@ impl Parser {
             | JsTok::Try(sp)
             | JsTok::Catch(sp)
             | JsTok::Throw(sp)
+            | JsTok::Class(sp)
+            | JsTok::Constructor(sp)
+            | JsTok::Extends(sp)
+            | JsTok::Static(sp)
+            | JsTok::Switch(sp)
+            | JsTok::Case(sp)
+            | JsTok::Default(sp)
+            | JsTok::Break(sp)
+            | JsTok::Continue(sp)
+            | JsTok::New(sp)
+            | JsTok::This(sp)
+            | JsTok::Super(sp)
             | JsTok::LParen(sp)
             | JsTok::RParen(sp)
             | JsTok::LBrace(sp)
@@ -72,7 +84,9 @@ impl Parser {
             | JsTok::Colon(sp)
             | JsTok::Question(sp)
             | JsTok::Plus(sp)
+            | JsTok::PlusPlus(sp)
             | JsTok::Minus(sp)
+            | JsTok::MinusMinus(sp)
             | JsTok::Star(sp)
             | JsTok::Slash(sp)
             | JsTok::Bang(sp)
@@ -85,7 +99,11 @@ impl Parser {
             | JsTok::GreaterEq(sp)
             | JsTok::AndAnd(sp)
             | JsTok::OrOr(sp)
+            | JsTok::EqEqEq(sp)
+            | JsTok::BangEqEq(sp)
             | JsTok::Arrow(sp)
+            | JsTok::Async(sp)
+            | JsTok::Await(sp)
             | JsTok::Backtick(sp)
             | JsTok::DollarLBrace(sp)
             | JsTok::EOF(sp) => sp,
@@ -118,6 +136,24 @@ impl Parser {
                 self.bump();
                 Ok(JsStmt::Block { body, span: sp })
             }
+            JsTok::Async(sp) => {
+                self.bump();
+                if matches!(self.peek(), JsTok::Function(_)) {
+                    self.bump();
+                    let name = match self.bump() {
+                        JsTok::Ident(s, _) => s,
+                        _ => return Err("Expected function name".to_string()),
+                    };
+                    let params = self.parse_param_list()?;
+                    let body = self.parse_stmt()?;
+                    Ok(JsStmt::FunctionDecl { name, params, body: Box::new(body), is_async: true, span: sp })
+                } else {
+                    // async () => ...
+                    let expr = self.parse_arrow_fn(true)?;
+                    self.expect_semi_opt();
+                    Ok(JsStmt::Expr(expr, sp))
+                }
+            }
             JsTok::Function(sp) => {
                 self.bump();
                 let name = match self.bump() {
@@ -126,7 +162,7 @@ impl Parser {
                 };
                 let params = self.parse_param_list()?;
                 let body = self.parse_stmt()?;
-                Ok(JsStmt::FunctionDecl { name, params, body: Box::new(body), span: sp })
+                Ok(JsStmt::FunctionDecl { name, params, body: Box::new(body), is_async: false, span: sp })
             }
             JsTok::Try(sp) => {
                 self.bump();
@@ -229,6 +265,103 @@ impl Parser {
                 self.expect_semi_opt();
                 Ok(JsStmt::VarDecl { kind, pattern, value, span: sp })
             }
+            JsTok::Class(sp) => {
+                self.bump();
+                let name = match self.bump() {
+                    JsTok::Ident(s, _) => s,
+                    _ => return Err("Expected class name".to_string()),
+                };
+                let mut extends = None;
+                if matches!(self.peek(), JsTok::Extends(_)) {
+                    self.bump();
+                    extends = Some(match self.bump() {
+                        JsTok::Ident(s, _) => s,
+                        _ => return Err("Expected identifier after extends".to_string()),
+                    });
+                }
+                match self.bump() {
+                    JsTok::LBrace(_) => {}
+                    _ => return Err("Expected '{' for class body".to_string()),
+                }
+                let mut body = Vec::new();
+                while !matches!(self.peek(), JsTok::RBrace(_)) && !self.is_eof() {
+                    // Method parsing
+                    let _is_static = if matches!(self.peek(), JsTok::Static(_)) {
+                        self.bump();
+                        true
+                    } else {
+                        false
+                    };
+                    let method_name = match self.bump() {
+                        JsTok::Ident(s, _) => s,
+                        JsTok::Constructor(_) => "constructor".to_string(),
+                        _ => return Err("Expected method name".to_string()),
+                    };
+                    let params = self.parse_param_list()?;
+                    let method_body = self.parse_stmt()?;
+                    body.push(JsStmt::FunctionDecl { 
+                        name: method_name, 
+                        params, 
+                        body: Box::new(method_body), 
+                        is_async: false, // Could be async later
+                        span: sp.clone() 
+                    });
+                }
+                self.bump(); // }
+                Ok(JsStmt::ClassDecl { name, extends, body, span: sp })
+            }
+            JsTok::Switch(sp) => {
+                self.bump();
+                self.expect_lparen()?;
+                let discriminant = self.parse_expr(0)?;
+                self.expect_rparen()?;
+                match self.bump() {
+                    JsTok::LBrace(_) => {}
+                    _ => return Err("Expected '{' for switch".to_string()),
+                }
+                let mut cases = Vec::new();
+                let mut default = None;
+                while !matches!(self.peek(), JsTok::RBrace(_)) && !self.is_eof() {
+                    match self.bump() {
+                        JsTok::Case(_) => {
+                            let cond = self.parse_expr(0)?;
+                            match self.bump() {
+                                JsTok::Colon(_) => {}
+                                _ => return Err("Expected ':' after case".to_string()),
+                            }
+                            let mut stmts = Vec::new();
+                            while !matches!(self.peek(), JsTok::Case(_) | JsTok::Default(_) | JsTok::RBrace(_)) {
+                                stmts.push(self.parse_stmt()?);
+                            }
+                            cases.push((cond, stmts));
+                        }
+                        JsTok::Default(_) => {
+                            match self.bump() {
+                                JsTok::Colon(_) => {}
+                                _ => return Err("Expected ':' after default".to_string()),
+                            }
+                            let mut stmts = Vec::new();
+                            while !matches!(self.peek(), JsTok::Case(_) | JsTok::Default(_) | JsTok::RBrace(_)) {
+                                stmts.push(self.parse_stmt()?);
+                            }
+                            default = Some(stmts);
+                        }
+                        _ => return Err("Expected case or default".to_string()),
+                    }
+                }
+                self.bump(); // }
+                Ok(JsStmt::Switch { discriminant, cases, default, span: sp })
+            }
+            JsTok::Break(sp) => {
+                self.bump();
+                self.expect_semi_opt();
+                Ok(JsStmt::Break(sp))
+            }
+            JsTok::Continue(sp) => {
+                self.bump();
+                self.expect_semi_opt();
+                Ok(JsStmt::Continue(sp))
+            }
             _ => {
                 let sp = match self.peek() { JsTok::EOF(s) => s, t => match t { JsTok::Ident(_, s) => s, JsTok::String(_, s) => s, JsTok::Number(_, s) => s, _ => Span { line: 0, col: 0 } } };
                 let expr = self.parse_expr(0)?;
@@ -262,7 +395,9 @@ impl Parser {
             JsTok::OrOr(_) => Some((1, "||")),
             JsTok::AndAnd(_) => Some((2, "&&")),
             JsTok::EqEq(_) => Some((3, "==")),
+            JsTok::EqEqEq(_) => Some((3, "===")),
             JsTok::BangEq(_) => Some((3, "!=")),
+            JsTok::BangEqEq(_) => Some((3, "!==")),
             JsTok::Less(_) => Some((4, "<")),
             JsTok::LessEq(_) => Some((4, "<=")),
             JsTok::Greater(_) => Some((4, ">")),
@@ -304,7 +439,7 @@ impl Parser {
             if prec < min_prec { break; }
             let sp = match self.bump() {
                 JsTok::Plus(s) | JsTok::Minus(s) | JsTok::Star(s) | JsTok::Slash(s) |
-                JsTok::EqEq(s) | JsTok::BangEq(s) |
+                JsTok::EqEq(s) | JsTok::EqEqEq(s) | JsTok::BangEq(s) | JsTok::BangEqEq(s) |
                 JsTok::Less(s) | JsTok::LessEq(s) | JsTok::Greater(s) | JsTok::GreaterEq(s) |
                 JsTok::AndAnd(s) | JsTok::OrOr(s) => s,
                 _ => Span { line: 0, col: 0 },
@@ -319,6 +454,41 @@ impl Parser {
         match self.peek() {
             JsTok::Bang(sp) => { self.bump(); Ok(JsExpr::Unary { op: "!".to_string(), expr: Box::new(self.parse_prefix()?), span: sp }) }
             JsTok::Minus(sp) => { self.bump(); Ok(JsExpr::Unary { op: "-".to_string(), expr: Box::new(self.parse_prefix()?), span: sp }) }
+            JsTok::Await(sp) => {
+                self.bump();
+                let e = self.parse_prefix()?;
+                Ok(JsExpr::Await { expr: Box::new(e), span: sp })
+            }
+            JsTok::PlusPlus(sp) => {
+                self.bump();
+                let expr = self.parse_prefix()?;
+                Ok(JsExpr::Update { op: "++".to_string(), is_prefix: true, expr: Box::new(expr), span: sp })
+            }
+            JsTok::MinusMinus(sp) => {
+                self.bump();
+                let expr = self.parse_prefix()?;
+                Ok(JsExpr::Update { op: "--".to_string(), is_prefix: true, expr: Box::new(expr), span: sp })
+            }
+            JsTok::New(sp) => {
+                self.bump();
+                let callee = self.parse_primary()?; // Simplified: new ClassName(...)
+                let mut args = Vec::new();
+                if matches!(self.peek(), JsTok::LParen(_)) {
+                    self.bump();
+                    if !matches!(self.peek(), JsTok::RParen(_)) {
+                        loop {
+                            args.push(self.parse_expr(0)?);
+                            if matches!(self.peek(), JsTok::Comma(_)) {
+                                self.bump();
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    self.expect_rparen()?;
+                }
+                Ok(JsExpr::New { callee: Box::new(callee), args, span: sp })
+            }
             _ => self.parse_postfix(),
         }
     }
@@ -326,7 +496,7 @@ impl Parser {
     fn parse_postfix(&mut self) -> Result<JsExpr, String> {
         // arrow function: (a,b)=>...
         if matches!(self.peek(), JsTok::LParen(_)) && self.looks_like_arrow() {
-            return self.parse_arrow_fn();
+            return self.parse_arrow_fn(false);
         }
 
         let mut expr = self.parse_primary()?;
@@ -334,11 +504,19 @@ impl Parser {
             match self.peek() {
                 JsTok::Dot(sp) => {
                     self.bump();
-                    let name = match self.bump() {
+                    let prop = match self.bump() {
                         JsTok::Ident(s, _) => s,
-                        _ => return Err("Expected identifier after '.'".to_string()),
+                        _ => return Err("Expected property name".to_string()),
                     };
-                    expr = JsExpr::Member { object: Box::new(expr), property: name, span: sp };
+                    expr = JsExpr::Member { object: Box::new(expr), property: prop, span: sp };
+                }
+                JsTok::PlusPlus(sp) => {
+                    self.bump();
+                    expr = JsExpr::Update { op: "++".to_string(), is_prefix: false, expr: Box::new(expr), span: sp };
+                }
+                JsTok::MinusMinus(sp) => {
+                    self.bump();
+                    expr = JsExpr::Update { op: "--".to_string(), is_prefix: false, expr: Box::new(expr), span: sp };
                 }
                 JsTok::LParen(sp) => {
                     self.bump();
@@ -392,7 +570,7 @@ impl Parser {
         false
     }
 
-    fn parse_arrow_fn(&mut self) -> Result<JsExpr, String> {
+    fn parse_arrow_fn(&mut self, is_async: bool) -> Result<JsExpr, String> {
         let sp = match self.peek() { JsTok::LParen(s) => s, _ => Span { line: 0, col: 0 } };
         let params = self.parse_param_list()?;
         match self.bump() { JsTok::Arrow(_) => {}, _ => return Err("Expected '=>'".to_string()) }
@@ -403,7 +581,7 @@ impl Parser {
             let e = self.parse_expr(0)?;
             JsStmt::Return(Some(e), sp.clone())
         };
-        Ok(JsExpr::ArrowFn { params, body: Box::new(body), span: sp })
+        Ok(JsExpr::ArrowFn { params, body: Box::new(body), is_async, span: sp })
     }
 
     fn parse_param_list(&mut self) -> Result<Vec<JsParam>, String> {
@@ -539,6 +717,8 @@ impl Parser {
             JsTok::True(sp) => Ok(JsExpr::Bool(true, sp)),
             JsTok::False(sp) => Ok(JsExpr::Bool(false, sp)),
             JsTok::Null(sp) => Ok(JsExpr::Null(sp)),
+            JsTok::This(sp) => Ok(JsExpr::This(sp)),
+            JsTok::Super(sp) => Ok(JsExpr::Super(sp)),
             JsTok::Backtick(sp) => {
                 let mut parts: Vec<JsTemplatePart> = Vec::new();
                 loop {

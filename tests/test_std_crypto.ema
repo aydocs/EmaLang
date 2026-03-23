@@ -1,0 +1,9 @@
+@server {
+    var session_id: Str = std::crypto::uuid();
+    print "Generated UUID (Session ID):";
+    print session_id;
+
+    var hash: Str = std::crypto::sha256(session_id);
+    print "SHA256 Hash of Session ID:";
+    print hash;
+}

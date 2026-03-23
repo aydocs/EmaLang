@@ -1,0 +1,1389 @@
+// ============================================================
+// EMA Full-Stack E-Commerce Site
+// ============================================================
+// Database Models: Product, Category, User, Order, OrderItem
+// Backend: Product listing, Cart, Orders, Auth, Payment simulation
+// Frontend: Homepage, Cart, Login/Register, Reactive state
+// ============================================================
+
+// ============================================================
+// DATABASE MODELS
+// ============================================================
+
+model Category {
+    name: str
+    description: str
+}
+
+model Product {
+    name: str
+    description: str
+    price: int
+    image_url: str
+    category_id: int
+    stock: int
+}
+
+model User {
+    email: str
+    password_hash: str
+    full_name: str
+    phone: str
+    created_at: str
+}
+
+model Order {
+    user_email: str
+    status: str
+    total: int
+    shipping_address: str
+    payment_method: str
+    created_at: str
+}
+
+model OrderItem {
+    order_id: int
+    product_id: int
+    product_name: str
+    quantity: int
+    unit_price: int
+    subtotal: int
+}
+
+// ============================================================
+// BACKEND SERVER
+// ============================================================
+
+@server {
+    // --------------------------------------------------------
+    // Seed Categories
+    // --------------------------------------------------------
+    Category::insert("Electronics", "Electronic devices and gadgets");
+    Category::insert("Clothing", "Fashion and apparel");
+    Category::insert("Books", "Books and publications");
+    Category::insert("Home & Garden", "Home improvement and garden");
+
+    // --------------------------------------------------------
+    // Seed Products
+    // --------------------------------------------------------
+    Product::insert("Smartphone Pro", "Latest flagship smartphone with advanced camera", 89900, "https://picsum.photos/300/200?random=1", 1, 50);
+    Product::insert("Wireless Earbuds", "Premium noise-cancelling earbuds", 19900, "https://picsum.photos/300/200?random=2", 1, 100);
+    Product::insert("Smart Watch", "Fitness tracking smartwatch", 29900, "https://picsum.photos/300/200?random=3", 1, 75);
+    Product::insert("Laptop Ultra", "Powerful ultrabook for professionals", 129900, "https://picsum.photos/300/200?random=4", 1, 30);
+    
+    Product::insert("Cotton T-Shirt", "Comfortable cotton t-shirt in multiple colors", 2499, "https://picsum.photos/300/200?random=5", 2, 200);
+    Product::insert("Denim Jeans", "Classic fit denim jeans", 7999, "https://picsum.photos/300/200?random=6", 2, 150);
+    Product::insert("Running Shoes", "Professional running shoes", 14999, "https://picsum.photos/300/200?random=7", 2, 80);
+    Product::insert("Winter Jacket", "Warm winter jacket", 19999, "https://picsum.photos/300/200?random=8", 2, 60);
+    
+    Product::insert("JavaScript Guide", "Complete JavaScript programming guide", 4999, "https://picsum.photos/300/200?random=9", 3, 500);
+    Product::insert("Python Cookbook", "Python programming recipes", 5999, "https://picsum.photos/300/200?random=10", 3, 350);
+    Product::insert("Data Science Handbook", "Essential data science reference", 8999, "https://picsum.photos/300/200?random=11", 3, 200);
+    Product::insert("Web Development Mastery", "Full stack web development", 7999, "https://picsum.photos/300/200?random=12", 3, 250);
+    
+    Product::insert("Smart LED Bulb", "WiFi controlled LED bulb", 2499, "https://picsum.photos/300/200?random=13", 4, 300);
+    Product::insert("Garden Tools Set", "Complete gardening toolset", 4999, "https://picsum.photos/300/200?random=14", 4, 100);
+    Product::insert("Indoor Plant Pot", "Ceramic plant pot with drainage", 1999, "https://picsum.photos/300/200?random=15", 4, 200);
+    Product::insert("Table Lamp", "Modern LED table lamp", 3999, "https://picsum.photos/300/200?random=16", 4, 120);
+
+    // --------------------------------------------------------
+    // HTTP Routes
+    // --------------------------------------------------------
+    
+    // Home page - serve the SPA
+    std::http::route("GET", "/", php{
+        hydrate("page", "home");
+    }, 200, "text/html; charset=utf-8");
+    
+    // Cart page
+    std::http::route("GET", "/cart", php{
+        hydrate("page", "cart");
+    }, 200, "text/html; charset=utf-8");
+    
+    // Login page
+    std::http::route("GET", "/login", php{
+        hydrate("page", "login");
+    }, 200, "text/html; charset=utf-8");
+    
+    // Register page
+    std::http::route("GET", "/register", php{
+        hydrate("page", "register");
+    }, 200, "text/html; charset=utf-8");
+    
+    // Orders page
+    std::http::route("GET", "/orders", php{
+        hydrate("page", "orders");
+    }, 200, "text/html; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: Get All Categories
+    // --------------------------------------------------------
+    std::http::route("GET", "/api/categories", php{
+        echo db_all("Category");
+    }, 200, "application/json; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: Get All Products
+    // --------------------------------------------------------
+    std::http::route("GET", "/api/products", php{
+        echo db_all("Product");
+    }, 200, "application/json; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: Get Products by Category
+    // --------------------------------------------------------
+    std::http::route("GET", "/api/products/category/:id", php{
+        $category_id = intval($_GET_id);
+        echo db_where("Product", "category_id = ?", $category_id);
+    }, 200, "application/json; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: Get Single Product
+    // --------------------------------------------------------
+    std::http::route("GET", "/api/product/:id", php{
+        $id = intval($_GET_id);
+        echo db_find("Product", $id);
+    }, 200, "application/json; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: User Registration
+    // --------------------------------------------------------
+    std::http::route("POST", "/api/register", php{
+        $email = $_POST_email;
+        $password = $_POST_password;
+        $full_name = $_POST_full_name;
+        $phone = $_POST_phone;
+        
+        if ($email == "") { 
+            echo json_object("ok", false, "error", "Email is required"); 
+            return; 
+        }
+        if ($password == "") { 
+            echo json_object("ok", false, "error", "Password is required"); 
+            return; 
+        }
+        
+        // Simple password hash (in production, use proper hashing)
+        $password_hash = md5($password);
+        $created_at = date("Y-m-d H:i:s");
+        
+        db_insert("User", $email, $password_hash, $full_name, $phone, $created_at);
+        
+        // Auto-login after registration
+        hydrate("user_email", $email);
+        hydrate("user_name", $full_name);
+        
+        echo json_object("ok", true, "message", "Registration successful");
+    }, 200, "application/json; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: User Login
+    // --------------------------------------------------------
+    std::http::route("POST", "/api/login", php{
+        $email = $_POST_email;
+        $password = $_POST_password;
+        
+        if ($email == "") { 
+            echo json_object("ok", false, "error", "Email is required"); 
+            return; 
+        }
+        if ($password == "") { 
+            echo json_object("ok", false, "error", "Password is required"); 
+            return; 
+        }
+        
+        $password_hash = md5($password);
+        
+        // Find user
+        $users = db_where("User", "email = ? AND password_hash = ?", $email, $password_hash);
+        
+        if (count($users) > 0) {
+            $user = $users[0];
+            hydrate("user_email", $user["email"]);
+            hydrate("user_name", $user["full_name"]);
+            hydrate("user_logged_in", "true");
+            echo json_object("ok", true, "message", "Login successful", "user_name", $user["full_name"]);
+        } else {
+            echo json_object("ok", false, "error", "Invalid email or password");
+        }
+    }, 200, "application/json; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: User Logout
+    // --------------------------------------------------------
+    std::http::route("POST", "/api/logout", php{
+        hydrate("user_email", "");
+        hydrate("user_name", "");
+        hydrate("user_logged_in", "false");
+        echo json_object("ok", true, "message", "Logged out successfully");
+    }, 200, "application/json; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: Get User Orders
+    // --------------------------------------------------------
+    std::http::route("GET", "/api/orders", php{
+        $email = $_GET_email;
+        if ($email == "") {
+            echo json_object("ok", false, "error", "Email required");
+            return;
+        }
+        $orders = db_where("Order", "user_email = ?", $email);
+        
+        // Get order items for each order
+        $result = array();
+        foreach ($orders as $order) {
+            $items = db_where("OrderItem", "order_id = ?", $order["id"]);
+            $order["items"] = $items;
+            $result[] = $order;
+        }
+        
+        echo json_encode($result);
+    }, 200, "application/json; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: Create Order (Checkout)
+    // --------------------------------------------------------
+    std::http::route("POST", "/api/order", php{
+        $user_email = $_JSON_user_email;
+        $items_json = $_JSON_items;
+        $total = intval($_JSON_total);
+        $shipping_address = $_JSON_shipping_address;
+        $payment_method = $_JSON_payment_method;
+        
+        if ($user_email == "") {
+            echo json_object("ok", false, "error", "Please login to place order");
+            return;
+        }
+        if ($items_json == "[]" || $items_json == "") {
+            echo json_object("ok", false, "error", "Cart is empty");
+            return;
+        }
+        
+        $items = json_decode($items_json, true);
+        if (count($items) == 0) {
+            echo json_object("ok", false, "error", "Cart is empty");
+            return;
+        }
+        
+        $created_at = date("Y-m-d H:i:s");
+        $status = "pending";
+        
+        // Create order
+        db_insert("Order", $user_email, $status, $total, $shipping_address, $payment_method, $created_at);
+        
+        // Get the last inserted order ID
+        $orders = db_where("Order", "user_email = ? AND created_at = ?", $user_email, $created_at);
+        $order_id = $orders[0]["id"];
+        
+        // Create order items
+        foreach ($items as $item) {
+            $product_id = intval($item["id"]);
+            $product_name = $item["name"];
+            $quantity = intval($item["quantity"]);
+            $unit_price = intval($item["price"]);
+            $subtotal = $quantity * $unit_price;
+            
+            db_insert("OrderItem", $order_id, $product_id, $product_name, $quantity, $unit_price, $subtotal);
+        }
+        
+        echo json_object("ok", true, "message", "Order placed successfully", "order_id", $order_id);
+    }, 200, "application/json; charset=utf-8");
+
+    // --------------------------------------------------------
+    // API: Payment Simulation
+    // --------------------------------------------------------
+    std::http::route("POST", "/api/payment/simulate", php{
+        $order_id = intval($_JSON_order_id);
+        $card_number = $_JSON_card_number;
+        $expiry = $_JSON_expiry;
+        $cvv = $_JSON_cvv;
+        
+        // Simulate payment processing
+        // In production, integrate with real payment gateway
+        
+        if (strlen($card_number) < 13) {
+            echo json_object("ok", false, "error", "Invalid card number");
+            return;
+        }
+        
+        // Simulate successful payment
+        $payment_status = "completed";
+        $transaction_id = "TXN-" . time() . "-" . rand(1000, 9999);
+        
+        // Update order status
+        // Note: In ema, we'd need to update the order, but for demo we'll return success
+        
+        echo json_object("ok", true, "message", "Payment successful", "transaction_id", $transaction_id, "status", $payment_status);
+    }, 200, "application/json; charset=utf-8");
+
+    // Start HTTP server
+    std::http::serve(8080);
+}
+
+// ============================================================
+// FRONTEND CLIENT
+// ============================================================
+
+@client {
+    // --------------------------------------------------------
+    // Reactive State
+    // --------------------------------------------------------
+    state current_page = "home";
+    state user_email = "";
+    state user_name = "";
+    state user_logged_in = "false";
+    state cart_items = "";
+    state cart_total = 0;
+    state products = "";
+    state categories = "";
+    state selected_category = 0;
+    state orders = "";
+    state search_query = "";
+    
+    // Auth form states
+    state login_email = "";
+    state login_password = "";
+    state register_email = "";
+    state register_password = "";
+    state register_full_name = "";
+    state register_phone = "";
+    state auth_error = "";
+    state auth_success = "";
+    
+    // Checkout states
+    state checkout_address = "";
+    state checkout_payment_method = "credit_card";
+    state checkout_card_number = "";
+    state checkout_expiry = "";
+    state checkout_cvv = "";
+    state checkout_processing = "false";
+
+    // --------------------------------------------------------
+    // Main Application Container
+    // --------------------------------------------------------
+    <div style: "min-height: 100vh; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); font-family: 'Segoe UI', system-ui, sans-serif;">
+        
+        // Navigation Bar
+        <nav style: "background: rgba(255,255,255,0.05); backdrop-filter: blur(10px); padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1);">
+            <div style: "display: flex; align-items: center; gap: 12px;">
+                <div style: "width: 40px; height: 40px; background: linear-gradient(135deg, #e94560, #0f3460); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 18px;">E</div>
+                <span style: "color: white; font-size: 24px; font-weight: bold;">EmaShop</span>
+            </div>
+            
+            <div style: "display: flex; gap: 24px; align-items: center;">
+                <button onclick: "setPage('home')" style: "background: none; border: none; color: white; cursor: pointer; padding: 8px 16px; border-radius: 8px; transition: all 0.3s;" onmouseover: "this.style.background='rgba(255,255,255,0.1)'" onmouseout: "this.style.background='none'">Home</button>
+                <button onclick: "setPage('cart')" style: "background: none; border: none; color: white; cursor: pointer; padding: 8px 16px; border-radius: 8px; transition: all 0.3s;" onmouseover: "this.style.background='rgba(255,255,255,0.1)'" onmouseout: "this.style.background='none'">
+                    Cart
+                    html {<span id="cart-count"></span>}
+                </button>
+                if (state().user_logged_in === "true") {
+                    <button onclick: "setPage('orders')" style: "background: none; border: none; color: white; cursor: pointer; padding: 8px 16px; border-radius: 8px; transition: all 0.3s;" onmouseover: "this.style.background='rgba(255,255,255,0.1)'" onmouseout: "this.style.background='none'">Orders</button>
+                    <div style: "color: rgba(255,255,255,0.7); font-size: 14px;">Hi, {{ state().user_name }}</div>
+                    <button onclick: "logout()" style: "background: #e94560; border: none; color: white; cursor: pointer; padding: 8px 16px; border-radius: 8px;">Logout</button>
+                } else {
+                    <button onclick: "setPage('login')" style: "background: none; border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer; padding: 8px 16px; border-radius: 8px;">Login</button>
+                    <button onclick: "setPage('register')" style: "background: #e94560; border: none; color: white; cursor: pointer; padding: 8px 16px; border-radius: 8px;">Register</button>
+                }
+            </div>
+        </nav>
+
+        // Page Content
+        <div style: "padding: 32px; max-width: 1400px; margin: 0 auto;">
+            
+            // HOME PAGE
+            if (state().current_page === "home") {
+                <div style: "color: white; margin-bottom: 32px;">
+                    <h1 style: "font-size: 36px; margin-bottom: 8px;">Welcome to EmaShop</h1>
+                    <p style: "opacity: 0.7; font-size: 18px;">Discover amazing products at great prices</p>
+                </div>
+                
+                // Search Bar
+                <div style: "margin-bottom: 24px;">
+                    <input 
+                        type: "text" 
+                        placeholder: "Search products..." 
+                        oninput: "handleSearch(event)"
+                        style: "width: 100%; max-width: 400px; padding: 12px 20px; border: none; border-radius: 12px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; outline: none;"
+                    />
+                </div>
+                
+                // Category Filters
+                <div style: "display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 32px;">
+                    <button onclick: "filterByCategory(0)" style: "padding: 10px 20px; border: none; border-radius: 25px; cursor: pointer; transition: all 0.3s;" class: "category-btn" data-id: "0">All</button>
+                    html {<div id="category-buttons"></div>}
+                </div>
+                
+                // Products Grid
+                <div style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 24px;" id: "products-container">
+                    
+                </div>
+            }
+            
+            // CART PAGE
+            if (state().current_page === "cart") {
+                <div style: "color: white;">
+                    <h1 style: "font-size: 32px; margin-bottom: 24px;">Shopping Cart</h1>
+                    
+                    if (true) {
+                        <div style: "text-align: center; padding: 60px; background: rgba(255,255,255,0.05); border-radius: 16px;">
+                            <p style: "font-size: 48px; margin-bottom: 16px;">🛒</p>
+                            <p style: "opacity: 0.7; font-size: 18px;">Your cart is empty</p>
+                            <button onclick: "setPage('home')" style: "margin-top: 20px; background: #e94560; border: none; color: white; cursor: pointer; padding: 12px 32px; border-radius: 8px; font-size: 16px;">Continue Shopping</button>
+                        </div>
+                    } else {
+                        <div style: "display: grid; grid-template-columns: 1fr 350px; gap: 32px;">
+                            // Cart Items
+                            <div style: "background: rgba(255,255,255,0.05); border-radius: 16px; padding: 24px;">
+                                <h2 style: "margin-bottom: 20px;">Cart Items</h2>
+                                html {<div id="cart-items"></div>}
+                            </div>
+                            
+                            // Checkout Panel
+                            <div style: "background: rgba(255,255,255,0.05); border-radius: 16px; padding: 24px; height: fit-content;">
+                                <h2 style: "margin-bottom: 20px;">Order Summary</h2>
+                                <div style: "display: flex; justify-content: space-between; margin-bottom: 12px; color: rgba(255,255,255,0.7);">
+                                    <span>Subtotal</span>
+                                    <span>{{ formatPrice(state().cart_total) }}</span>
+                                </div>
+                                <div style: "display: flex; justify-content: space-between; margin-bottom: 12px; color: rgba(255,255,255,0.7);">
+                                    <span>Shipping</span>
+                                    <span>{{ formatPrice(0) }}</span>
+                                </div>
+                                <div style: "border-top: 1px solid rgba(255,255,255,0.2); margin: 16px 0;"></div>
+                                <div style: "display: flex; justify-content: space-between; margin-bottom: 24px; font-size: 20px; font-weight: bold;">
+                                    <span>Total</span>
+                                    <span>{{ formatPrice(state().cart_total) }}</span>
+                                </div>
+                                
+                                if (state().user_logged_in === "true") {
+                                    <button onclick: "proceedToCheckout()" style: "width: 100%; background: #e94560; border: none; color: white; cursor: pointer; padding: 16px; border-radius: 12px; font-size: 18px; font-weight: bold;">Proceed to Checkout</button>
+                                } else {
+                                    <button onclick: "setPage('login')" style: "width: 100%; background: #e94560; border: none; color: white; cursor: pointer; padding: 16px; border-radius: 12px; font-size: 18px; font-weight: bold;">Login to Checkout</button>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+            
+            // LOGIN PAGE
+            if (state().current_page === "login") {
+                <div style: "max-width: 400px; margin: 0 auto; padding: 40px; background: rgba(255,255,255,0.05); border-radius: 16px;">
+                    <h1 style: "color: white; text-align: center; margin-bottom: 32px;">Login</h1>
+                    
+                    if (state().auth_error !== "") {
+                        <div style: "background: rgba(233,69,96,0.2); border: 1px solid #e94560; color: #e94560; padding: 12px; border-radius: 8px; margin-bottom: 16px;">{{ state().auth_error }}</div>
+                    }
+                    
+                    if (state().auth_success !== "") {
+                        <div style: "background: rgba(0,255,128,0.2); border: 1px solid #00ff80; color: #00ff80; padding: 12px; border-radius: 8px; margin-bottom: 16px;">{{ state().auth_success }}</div>
+                    }
+                    
+                    <form onsubmit: "handleLogin(event)">
+                        <div style: "margin-bottom: 20px;">
+                            <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">Email</label>
+                            <input type: "email" name: "email" required style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box;"/>
+                        </div>
+                        
+                        <div style: "margin-bottom: 24px;">
+                            <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">Password</label>
+                            <input type: "password" name: "password" required style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box;"/>
+                        </div>
+                        
+                        <button type: "submit" style: "width: 100%; background: #e94560; border: none; color: white; cursor: pointer; padding: 14px; border-radius: 8px; font-size: 16px; font-weight: bold;">Login</button>
+                    </form>
+                    
+                    <p style: "text-align: center; color: rgba(255,255,255,0.7); margin-top: 20px;">
+                        Don't have an account? 
+                        <button onclick: "setPage('register')" style: "background: none; border: none; color: #e94560; cursor: pointer; text-decoration: underline;">Register</button>
+                    </p>
+                </div>
+            }
+            
+            // REGISTER PAGE
+            if (state().current_page === "register") {
+                <div style: "max-width: 400px; margin: 0 auto; padding: 40px; background: rgba(255,255,255,0.05); border-radius: 16px;">
+                    <h1 style: "color: white; text-align: center; margin-bottom: 32px;">Create Account</h1>
+                    
+                    if (state().auth_error !== "") {
+                        <div style: "background: rgba(233,69,96,0.2); border: 1px solid #e94560; color: #e94560; padding: 12px; border-radius: 8px; margin-bottom: 16px;">{{ state().auth_error }}</div>
+                    }
+                    
+                    if (state().auth_success !== "") {
+                        <div style: "background: rgba(0,255,128,0.2); border: 1px solid #00ff80; color: #00ff80; padding: 12px; border-radius: 8px; margin-bottom: 16px;">{{ state().auth_success }}</div>
+                    }
+                    
+                    <form onsubmit: "handleRegister(event)">
+                        <div style: "margin-bottom: 20px;">
+                            <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">Full Name</label>
+                            <input type: "text" name: "full_name" required style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box;"/>
+                        </div>
+                        
+                        <div style: "margin-bottom: 20px;">
+                            <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">Email</label>
+                            <input type: "email" name: "email" required style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box;"/>
+                        </div>
+                        
+                        <div style: "margin-bottom: 20px;">
+                            <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">Phone</label>
+                            <input type: "tel" name: "phone" style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box;"/>
+                        </div>
+                        
+                        <div style: "margin-bottom: 24px;">
+                            <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">Password</label>
+                            <input type: "password" name: "password" required style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box;"/>
+                        </div>
+                        
+                        <button type: "submit" style: "width: 100%; background: #e94560; border: none; color: white; cursor: pointer; padding: 14px; border-radius: 8px; font-size: 16px; font-weight: bold;">Create Account</button>
+                    </form>
+                    
+                    <p style: "text-align: center; color: rgba(255,255,255,0.7); margin-top: 20px;">
+                        Already have an account? 
+                        <button onclick: "setPage('login')" style: "background: none; border: none; color: #e94560; cursor: pointer; text-decoration: underline;">Login</button>
+                    </p>
+                </div>
+            }
+            
+            // CHECKOUT PAGE (Modal)
+            if (state().current_page === "checkout") {
+                <div style: "color: white;">
+                    <h1 style: "font-size: 32px; margin-bottom: 24px;">Checkout</h1>
+                    
+                    <div style: "display: grid; grid-template-columns: 1fr 350px; gap: 32px;">
+                        // Shipping & Payment
+                        <div style: "background: rgba(255,255,255,0.05); border-radius: 16px; padding: 24px;">
+                            <h2 style: "margin-bottom: 20px;">Shipping Information</h2>
+                            <div style: "margin-bottom: 24px;">
+                                <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">Shipping Address</label>
+                                <textarea id: "shipping-address" rows: "3" style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box; resize: none;"></textarea>
+                            </div>
+                            
+                            <h2 style: "margin-bottom: 20px;">Payment Method</h2>
+                            <div style: "display: flex; gap: 16px; margin-bottom: 24px;">
+                                <label style: "display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                    <input type: "radio" name: "payment" value: "credit_card" checked/> Credit Card
+                                </label>
+                                <label style: "display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                    <input type: "radio" name: "payment" value: "paypal"/> PayPal
+                                </label>
+                            </div>
+                            
+                            <h2 style: "margin-bottom: 20px;">Card Details</h2>
+                            <div style: "margin-bottom: 16px;">
+                                <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">Card Number</label>
+                                <input type: "text" id: "card-number" placeholder: "1234 5678 9012 3456" style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box;"/>
+                            </div>
+                            <div style: "display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                                <div>
+                                    <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">Expiry</label>
+                                    <input type: "text" id: "card-expiry" placeholder: "MM/YY" style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box;"/>
+                                </div>
+                                <div>
+                                    <label style: "display: block; color: rgba(255,255,255,0.7); margin-bottom: 8px;">CVV</label>
+                                    <input type: "text" id: "card-cvv" placeholder: "123" style: "width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 16px; box-sizing: border-box;"/>
+                                </div>
+                            </div>
+                            
+                            <button onclick: "processPayment()" style: "width: 100%; background: #e94560; border: none; color: white; cursor: pointer; padding: 16px; border-radius: 12px; font-size: 18px; font-weight: bold;">
+                                if (state().checkout_processing === "true") {
+                                    Processing...
+                                } else {
+                                    Pay {{ formatPrice(state().cart_total) }}
+                                }
+                            </button>
+                            
+                            <button onclick: "setPage('cart')" style: "width: 100%; background: transparent; border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer; padding: 12px; border-radius: 8px; margin-top: 12px;">Back to Cart</button>
+                        </div>
+                        
+                        // Order Summary
+                        <div style: "background: rgba(255,255,255,0.05); border-radius: 16px; padding: 24px; height: fit-content;">
+                            <h2 style: "margin-bottom: 20px;">Order Summary</h2>
+                            html {<div id="checkout-items"></div>}
+                            <div style: "border-top: 1px solid rgba(255,255,255,0.2); margin: 16px 0;"></div>
+                            <div style: "display: flex; justify-content: space-between; font-size: 20px; font-weight: bold;">
+                                <span>Total</span>
+                                <span>{{ formatPrice(state().cart_total) }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+            
+            // ORDERS PAGE
+            if (state().current_page === "orders") {
+                <div style: "color: white;">
+                    <h1 style: "font-size: 32px; margin-bottom: 24px;">My Orders</h1>
+                    
+                    if (state().user_logged_in !== "true") {
+                        <div style: "text-align: center; padding: 60px; background: rgba(255,255,255,0.05); border-radius: 16px;">
+                            <p style: "font-size: 48px; margin-bottom: 16px;">🔒</p>
+                            <p style: "opacity: 0.7; font-size: 18px;">Please login to view your orders</p>
+                            <button onclick: "setPage('login')" style: "margin-top: 20px; background: #e94560; border: none; color: white; cursor: pointer; padding: 12px 32px; border-radius: 8px; font-size: 16px;">Login</button>
+                        </div>
+                    } else {
+                        <div id: "orders-list"></div>
+                    }
+                </div>
+            }
+            
+        </div>
+        
+        // Footer
+        <footer style: "background: rgba(0,0,0,0.3); padding: 32px; text-align: center; color: rgba(255,255,255,0.5); margin-top: 60px;">
+            <p>&copy; 2024 EmaShop. Built with EMA Full-Stack Framework.</p>
+        </footer>
+    </div>;
+
+    // ============================================================
+    // JAVASCRIPT LOGIC
+    // ============================================================
+    js <<<JS
+    // State helper
+    const state = () => EmaApp.state;
+    const setState = (key, value) => EmaApp.setState(key, value);
+    
+    // Helper to get array from string state
+    const getCartItems = () => {
+        const val = state().cart_items;
+        if (!val || val === "") return [];
+        try { return JSON.parse(val); } catch { return []; }
+    };
+    const getProducts = () => {
+        const val = state().products;
+        if (!val || val === "") return [];
+        try { return JSON.parse(val); } catch { return []; }
+    };
+    const getCategories = () => {
+        const val = state().categories;
+        if (!val || val === "") return [];
+        try { return JSON.parse(val); } catch { return []; }
+    };
+    const getOrders = () => {
+        const val = state().orders;
+        if (!val || val === "") return [];
+        try { return JSON.parse(val); } catch { return []; }
+    };
+    
+    // Format price from cents to dollars
+    const formatPrice = (cents) => {
+        const value = Number(cents || 0);
+        return '$' + (value / 100).toFixed(2);
+    };
+    
+    // Navigate to page
+    const setPage = (page) => {
+        setState('current_page', page);
+        setState('auth_error', '');
+        setState('auth_success', '');
+        
+        if (page === 'orders' && state().user_logged_in === 'true') {
+            loadOrders();
+        }
+    };
+    
+    // Load products from API
+    const loadProducts = async () => {
+        try {
+            const res = await fetch('/api/products');
+            const products = await res.json();
+            setState('products', products);
+            renderProducts(products);
+        } catch (e) {
+            console.error('Failed to load products:', e);
+        }
+    };
+    
+    // Load categories
+    const loadCategories = async () => {
+        try {
+            const res = await fetch('/api/categories');
+            const categories = await res.json();
+            setState('categories', categories);
+            renderCategoryButtons(categories);
+        } catch (e) {
+            console.error('Failed to load categories:', e);
+        }
+    };
+    
+    // Render category buttons
+    const renderCategoryButtons = (categories) => {
+        const container = document.getElementById('category-buttons');
+        if (!container) return;
+        
+        container.innerHTML = '';
+        
+        const selected = state().selected_category;
+        
+        categories.forEach(cat => {
+            const btn = document.createElement('button');
+            btn.textContent = cat.name;
+            btn.style.padding = '10px 20px';
+            btn.style.border = 'none';
+            btn.style.borderRadius = '25px';
+            btn.style.cursor = 'pointer';
+            btn.style.transition = 'all 0.3s';
+            btn.style.background = selected == cat.id ? '#e94560' : 'rgba(255,255,255,0.1)';
+            btn.style.color = 'white';
+            
+            btn.onclick = () => filterByCategory(cat.id);
+            container.appendChild(btn);
+        });
+    };
+    
+    // Filter by category
+    const filterByCategory = (categoryId) => {
+        setState('selected_category', categoryId);
+        
+        const products = state().products;
+        
+        if (categoryId === 0) {
+            renderProducts(products);
+            renderCategoryButtons(state().categories);
+            return;
+        }
+        
+        const filtered = products.filter(p => p.category_id == categoryId);
+        renderProducts(filtered);
+        
+        // Update button styles
+        const container = document.getElementById('category-buttons');
+        if (container) {
+            const buttons = container.querySelectorAll('button');
+            buttons.forEach((btn, idx) => {
+                const cats = state().categories;
+                if (cats[idx] && cats[idx].id == categoryId) {
+                    btn.style.background = '#e94560';
+                } else {
+                    btn.style.background = 'rgba(255,255,255,0.1)';
+                }
+            });
+        }
+    };
+    
+    // Handle search
+    const handleSearch = (event) => {
+        const query = event.target.value.toLowerCase();
+        setState('search_query', query);
+        
+        const products = state().products;
+        const filtered = products.filter(p => 
+            p.name.toLowerCase().includes(query) || 
+            p.description.toLowerCase().includes(query)
+        );
+        renderProducts(filtered);
+    };
+    
+    // Render products grid
+    const renderProducts = (products) => {
+        const container = document.getElementById('products-container');
+        if (!container) return;
+        
+        container.innerHTML = '';
+        
+        products.forEach(product => {
+            const card = document.createElement('div');
+            card.style.background = 'rgba(255,255,255,0.05)';
+            card.style.borderRadius = '16px';
+            card.style.padding = '20px';
+            card.style.transition = 'transform 0.3s, box-shadow 0.3s';
+            card.style.cursor = 'pointer';
+            
+            card.onmouseover = () => {
+                card.style.transform = 'translateY(-5px)';
+                card.style.boxShadow = '0 10px 30px rgba(0,0,0,0.3)';
+            };
+            card.onmouseout = () => {
+                card.style.transform = 'translateY(0)';
+                card.style.boxShadow = 'none';
+            };
+            
+            const img = document.createElement('img');
+            img.src = product.image_url || 'https://picsum.photos/300/200';
+            img.alt = product.name;
+            img.style.width = '100%';
+            img.style.height = '180px';
+            img.style.objectFit = 'cover';
+            img.style.borderRadius = '12px';
+            
+            const name = document.createElement('h3');
+            name.textContent = product.name;
+            name.style.color = 'white';
+            name.style.margin = '16px 0 8px 0';
+            name.style.fontSize = '18px';
+            
+            const desc = document.createElement('p');
+            desc.textContent = product.description;
+            desc.style.color = 'rgba(255,255,255,0.6)';
+            desc.style.fontSize = '14px';
+            desc.style.marginBottom = '12px';
+            desc.style.overflow = 'hidden';
+            desc.style.textOverflow = 'ellipsis';
+            desc.style.whiteSpace = 'nowrap';
+            
+            const priceRow = document.createElement('div');
+            priceRow.style.display = 'flex';
+            priceRow.style.justifyContent = 'space-between';
+            priceRow.style.alignItems = 'center';
+            
+            const price = document.createElement('span');
+            price.textContent = formatPrice(product.price);
+            price.style.color = '#00ff80';
+            price.style.fontSize = '20px';
+            price.style.fontWeight = 'bold';
+            
+            const stock = document.createElement('span');
+            stock.textContent = product.stock > 0 ? `Stock: ${product.stock}` : 'Out of stock';
+            stock.style.color = product.stock > 0 ? 'rgba(255,255,255,0.5)' : '#e94560';
+            stock.style.fontSize = '12px';
+            
+            const addBtn = document.createElement('button');
+            addBtn.textContent = 'Add to Cart';
+            addBtn.style.background = '#e94560';
+            addBtn.style.border = 'none';
+            addBtn.style.color = 'white';
+            addBtn.style.padding = '10px 20px';
+            addBtn.style.borderRadius = '8px';
+            addBtn.style.cursor = 'pointer';
+            addBtn.style.marginTop = '12px';
+            addBtn.style.width = '100%';
+            addBtn.style.fontWeight = 'bold';
+            
+            addBtn.onclick = (e) => {
+                e.stopPropagation();
+                addToCart(product);
+            };
+            
+            priceRow.appendChild(price);
+            priceRow.appendChild(stock);
+            
+            card.appendChild(img);
+            card.appendChild(name);
+            card.appendChild(desc);
+            card.appendChild(priceRow);
+            card.appendChild(addBtn);
+            
+            container.appendChild(card);
+        });
+    };
+    
+    // Add to cart
+    const addToCart = (product) => {
+        const items = getCartItems();
+        
+        // Check if product already in cart
+        const existingIndex = items.findIndex(item => item.id === product.id);
+        
+        if (existingIndex >= 0) {
+            items[existingIndex].quantity += 1;
+        } else {
+            items.push({
+                id: product.id,
+                name: product.name,
+                price: product.price,
+                quantity: 1,
+                image_url: product.image_url
+            });
+        }
+        
+        setState('cart_items', JSON.stringify(items));
+        updateCartTotal();
+        
+        // Show feedback
+        showNotification('Added to cart!');
+    };
+    
+    // Update cart total
+    const updateCartTotal = () => {
+        const items = getCartItems();
+        let total = 0;
+        items.forEach(item => {
+            total += item.price * item.quantity;
+        });
+        setState('cart_total', total);
+        localStorage.setItem('ema_cart', JSON.stringify(items));
+        localStorage.setItem('ema_cart_total', total);
+    };
+    
+    // Show notification
+    const showNotification = (message) => {
+        // Simple alert for demo - in production use toast
+        const existing = document.getElementById('toast');
+        if (existing) existing.remove();
+        
+        const toast = document.createElement('div');
+        toast.id = 'toast';
+        toast.textContent = message;
+        toast.style.position = 'fixed';
+        toast.style.bottom = '20px';
+        toast.style.right = '20px';
+        toast.style.background = '#00ff80';
+        toast.style.color = '#1a1a2e';
+        toast.style.padding = '12px 24px';
+        toast.style.borderRadius = '8px';
+        toast.style.fontWeight = 'bold';
+        toast.style.zIndex = '9999';
+        toast.style.animation = 'fadeIn 0.3s';
+        
+        document.body.appendChild(toast);
+        
+        setTimeout(() => {
+            toast.remove();
+        }, 2000);
+    };
+    
+    // Render cart items
+    const renderCartItems = () => {
+        const container = document.getElementById('cart-items');
+        if (!container) return;
+        
+        container.innerHTML = '';
+        
+        const items = state().cart_items;
+        
+        items.forEach((item, index) => {
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '16px';
+            row.style.padding = '16px 0';
+            row.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
+            
+            const img = document.createElement('img');
+            img.src = item.image_url || 'https://picsum.photos/80/80';
+            img.style.width = '60px';
+            img.style.height = '60px';
+            img.style.objectFit = 'cover';
+            img.style.borderRadius = '8px';
+            
+            const info = document.createElement('div');
+            info.style.flex = '1';
+            
+            const name = document.createElement('div');
+            name.textContent = item.name;
+            name.style.color = 'white';
+            name.style.fontWeight = 'bold';
+            
+            const price = document.createElement('div');
+            price.textContent = formatPrice(item.price);
+            price.style.color = 'rgba(255,255,255,0.7)';
+            price.style.fontSize = '14px';
+            
+            info.appendChild(name);
+            info.appendChild(price);
+            
+            const qtyControls = document.createElement('div');
+            qtyControls.style.display = 'flex';
+            qtyControls.style.alignItems = 'center';
+            qtyControls.style.gap = '8px';
+            
+            const minusBtn = document.createElement('button');
+            minusBtn.textContent = '-';
+            minusBtn.style.width = '28px';
+            minusBtn.style.height = '28px';
+            minusBtn.style.border = 'none';
+            minusBtn.style.borderRadius = '6px';
+            minusBtn.style.background = 'rgba(255,255,255,0.1)';
+            minusBtn.style.color = 'white';
+            minusBtn.style.cursor = 'pointer';
+            minusBtn.onclick = () => updateQuantity(index, -1);
+            
+            const qty = document.createElement('span');
+            qty.textContent = item.quantity;
+            qty.style.color = 'white';
+            qty.style.minWidth = '20px';
+            qty.style.textAlign = 'center';
+            
+            const plusBtn = document.createElement('button');
+            plusBtn.textContent = '+';
+            plusBtn.style.width = '28px';
+            plusBtn.style.height = '28px';
+            plusBtn.style.border = 'none';
+            plusBtn.style.borderRadius = '6px';
+            plusBtn.style.background = 'rgba(255,255,255,0.1)';
+            plusBtn.style.color = 'white';
+            plusBtn.style.cursor = 'pointer';
+            plusBtn.onclick = () => updateQuantity(index, 1);
+            
+            qtyControls.appendChild(minusBtn);
+            qtyControls.appendChild(qty);
+            qtyControls.appendChild(plusBtn);
+            
+            const subtotal = document.createElement('div');
+            subtotal.textContent = formatPrice(item.price * item.quantity);
+            subtotal.style.color = '#00ff80';
+            subtotal.style.fontWeight = 'bold';
+            subtotal.style.minWidth = '80px';
+            subtotal.style.textAlign = 'right';
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.textContent = '×';
+            removeBtn.style.width = '28px';
+            removeBtn.style.height = '28px';
+            removeBtn.style.border = 'none';
+            removeBtn.style.borderRadius = '6px';
+            removeBtn.style.background = 'rgba(233,69,96,0.2)';
+            removeBtn.style.color = '#e94560';
+            removeBtn.style.cursor = 'pointer';
+            removeBtn.style.fontSize = '18px';
+            removeBtn.onclick = () => removeFromCart(index);
+            
+            row.appendChild(img);
+            row.appendChild(info);
+            row.appendChild(qtyControls);
+            row.appendChild(subtotal);
+            row.appendChild(removeBtn);
+            
+            container.appendChild(row);
+        });
+    };
+    
+    // Update quantity
+    const updateQuantity = (index, delta) => {
+        const items = [...state().cart_items];
+        items[index].quantity += delta;
+        
+        if (items[index].quantity <= 0) {
+            items.splice(index, 1);
+        }
+        
+        setState('cart_items', items);
+        updateCartTotal();
+        renderCartItems();
+    };
+    
+    // Remove from cart
+    const removeFromCart = (index) => {
+        const items = [...state().cart_items];
+        items.splice(index, 1);
+        setState('cart_items', items);
+        updateCartTotal();
+        renderCartItems();
+    };
+    
+    // Proceed to checkout
+    const proceedToCheckout = () => {
+        setState('current_page', 'checkout');
+        renderCheckoutItems();
+    };
+    
+    // Render checkout items
+    const renderCheckoutItems = () => {
+        const container = document.getElementById('checkout-items');
+        if (!container) return;
+        
+        container.innerHTML = '';
+        
+        const items = state().cart_items;
+        
+        items.forEach(item => {
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.justifyContent = 'space-between';
+            row.style.marginBottom = '12px';
+            row.style.color = 'rgba(255,255,255,0.7)';
+            
+            const left = document.createElement('span');
+            left.textContent = `${item.name} x${item.quantity}`;
+            
+            const right = document.createElement('span');
+            right.textContent = formatPrice(item.price * item.quantity);
+            
+            row.appendChild(left);
+            row.appendChild(right);
+            container.appendChild(row);
+        });
+    };
+    
+    // Process payment
+    const processPayment = async () => {
+        const address = document.getElementById('shipping-address')?.value;
+        const cardNumber = document.getElementById('card-number')?.value;
+        const expiry = document.getElementById('card-expiry')?.value;
+        const cvv = document.getElementById('card-cvv')?.value;
+        
+        if (!address) {
+            alert('Please enter shipping address');
+            return;
+        }
+        
+        if (!cardNumber || !expiry || !cvv) {
+            alert('Please enter card details');
+            return;
+        }
+        
+        setState('checkout_processing', 'true');
+        
+        try {
+            // First create the order
+            const orderRes = await fetch('/api/order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_email: state().user_email,
+                    items: JSON.stringify(state().cart_items),
+                    total: state().cart_total,
+                    shipping_address: address,
+                    payment_method: 'credit_card'
+                })
+            });
+            
+            const orderResult = await orderRes.json();
+            
+            if (!orderResult.ok) {
+                alert(orderResult.error || 'Failed to create order');
+                setState('checkout_processing', 'false');
+                return;
+            }
+            
+            // Simulate payment
+            const paymentRes = await fetch('/api/payment/simulate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    order_id: orderResult.order_id,
+                    card_number: cardNumber,
+                    expiry: expiry,
+                    cvv: cvv
+                })
+            });
+            
+            const paymentResult = await paymentRes.json();
+            
+            if (paymentResult.ok) {
+                // Clear cart
+                setState('cart_items', []);
+                setState('cart_total', 0);
+                localStorage.removeItem('ema_cart');
+                localStorage.removeItem('ema_cart_total');
+                
+                alert('Payment successful! Order placed.');
+                setPage('orders');
+            } else {
+                alert(paymentResult.error || 'Payment failed');
+            }
+        } catch (e) {
+            console.error('Payment error:', e);
+            alert('Payment processing failed');
+        }
+        
+        setState('checkout_processing', 'false');
+    };
+    
+    // Handle login
+    const handleLogin = async (event) => {
+        event.preventDefault();
+        
+        const form = event.target;
+        const email = form.email.value;
+        const password = form.password.value;
+        
+        try {
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ email, password })
+            });
+            
+            const result = await res.json();
+            
+            if (result.ok) {
+                setState('user_email', email);
+                setState('user_name', result.user_name || email);
+                setState('user_logged_in', 'true');
+                setState('auth_success', 'Login successful!');
+                setTimeout(() => setPage('home'), 1000);
+            } else {
+                setState('auth_error', result.error);
+            }
+        } catch (e) {
+            setState('auth_error', 'Login failed. Please try again.');
+        }
+    };
+    
+    // Handle registration
+    const handleRegister = async (event) => {
+        event.preventDefault();
+        
+        const form = event.target;
+        const email = form.email.value;
+        const password = form.password.value;
+        const full_name = form.full_name.value;
+        const phone = form.phone.value;
+        
+        try {
+            const res = await fetch('/api/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ email, password, full_name, phone })
+            });
+            
+            const result = await res.json();
+            
+            if (result.ok) {
+                setState('user_email', email);
+                setState('user_name', full_name);
+                setState('user_logged_in', 'true');
+                setState('auth_success', 'Account created successfully!');
+                setTimeout(() => setPage('home'), 1000);
+            } else {
+                setState('auth_error', result.error);
+            }
+        } catch (e) {
+            setState('auth_error', 'Registration failed. Please try again.');
+        }
+    };
+    
+    // Logout
+    const logout = async () => {
+        try {
+            await fetch('/api/logout', { method: 'POST' });
+        } catch (e) {}
+        
+        setState('user_email', '');
+        setState('user_name', '');
+        setState('user_logged_in', 'false');
+        setState('orders', []);
+        setPage('home');
+    };
+    
+    // Load orders
+    const loadOrders = async () => {
+        const email = state().user_email;
+        if (!email) return;
+        
+        try {
+            const res = await fetch(`/api/orders?email=${encodeURIComponent(email)}`);
+            const orders = await res.json();
+            setState('orders', orders);
+            renderOrders();
+        } catch (e) {
+            console.error('Failed to load orders:', e);
+        }
+    };
+    
+    // Render orders
+    const renderOrders = () => {
+        const container = document.getElementById('orders-list');
+        if (!container) return;
+        
+        const orders = state().orders;
+        
+        if (orders.length === 0) {
+            container.innerHTML = '<div style="text-align: center; padding: 60px; background: rgba(255,255,255,0.05); border-radius: 16px;"><p style="opacity: 0.7; font-size: 18px;">No orders yet</p></div>';
+            return;
+        }
+        
+        container.innerHTML = '';
+        
+        orders.forEach(order => {
+            const card = document.createElement('div');
+            card.style.background = 'rgba(255,255,255,0.05)';
+            card.style.borderRadius = '16px';
+            card.style.padding = '24px';
+            card.style.marginBottom = '20px';
+            
+            const header = document.createElement('div');
+            header.style.display = 'flex';
+            header.style.justifyContent = 'space-between';
+            header.style.marginBottom = '16px';
+            
+            const orderId = document.createElement('div');
+            orderId.innerHTML = `<strong style="color: white;">Order #${order.id}</strong>`;
+            
+            const status = document.createElement('span');
+            status.textContent = order.status || 'pending';
+            status.style.background = order.status === 'completed' ? '#00ff80' : '#e94560';
+            status.style.color = '#1a1a2e';
+            status.style.padding = '4px 12px';
+            status.style.borderRadius = '12px';
+            status.style.fontSize = '12px';
+            status.style.fontWeight = 'bold';
+            
+            header.appendChild(orderId);
+            header.appendChild(status);
+            
+            const date = document.createElement('div');
+            date.textContent = `Date: ${order.created_at}`;
+            date.style.color = 'rgba(255,255,255,0.5)';
+            date.style.fontSize = '14px';
+            date.style.marginBottom = '16px';
+            
+            const total = document.createElement('div');
+            total.innerHTML = `<strong style="color: #00ff80; font-size: 20px;">Total: ${formatPrice(order.total)}</strong>`;
+            
+            card.appendChild(header);
+            card.appendChild(date);
+            card.appendChild(total);
+            
+            // Show items
+            if (order.items && order.items.length > 0) {
+                const itemsTitle = document.createElement('h4');
+                itemsTitle.textContent = 'Items:';
+                itemsTitle.style.color = 'rgba(255,255,255,0.7)';
+                itemsTitle.style.marginTop = '16px';
+                card.appendChild(itemsTitle);
+                
+                order.items.forEach(item => {
+                    const itemRow = document.createElement('div');
+                    itemRow.style.color = 'rgba(255,255,255,0.6)';
+                    itemRow.style.padding = '8px 0';
+                    itemRow.textContent = `${item.product_name} x${item.quantity} - ${formatPrice(item.subtotal)}`;
+                    card.appendChild(itemRow);
+                });
+            }
+            
+            container.appendChild(card);
+        });
+    };
+    
+    // Initialize
+    const init = () => {
+        // Load cart from localStorage
+        const savedCart = localStorage.getItem('ema_cart');
+        const savedTotal = localStorage.getItem('ema_cart_total');
+        
+        if (savedCart) {
+            try {
+                const items = JSON.parse(savedCart);
+                setState('cart_items', items);
+            } catch (e) {}
+        }
+        
+        if (savedTotal) {
+            setState('cart_total', parseInt(savedTotal) || 0);
+        }
+        
+        // Load data
+        loadCategories();
+        loadProducts();
+    };
+    
+    // Watch for page changes to render cart
+    const originalSetPage = window.setPage;
+    window.setPage = (page) => {
+        setPage(page);
+        
+        if (page === 'cart') {
+            setTimeout(renderCartItems, 100);
+        }
+    };
+    
+    // Make functions available globally
+    window.setPage = setPage;
+    window.addToCart = addToCart;
+    window.logout = logout;
+    window.filterByCategory = filterByCategory;
+    window.handleSearch = handleSearch;
+    window.handleLogin = handleLogin;
+    window.handleRegister = handleRegister;
+    window.proceedToCheckout = proceedToCheckout;
+    window.processPayment = processPayment;
+    window.updateQuantity = updateQuantity;
+    window.removeFromCart = removeFromCart;
+    window.formatPrice = formatPrice;
+    
+    // Initialize on load
+    init();
+    JS
+    ;
+}

@@ -19,7 +19,6 @@
       --accent2: #FF4FD8;
       --shadow: rgba(0,0,0,.55);
     }
-
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body {
@@ -215,7 +214,7 @@
           <div class="ctaRow">
             <a class="btn primary" href="#get-started">Get Started</a>
             <a class="btn ghost" href="#docs">Explore Docs</a>
-            <a class="btn ghost" href="https://github.com/emadocstechnologies/emalang">GitHub</a>
+            <a class="btn ghost" style="" href="https://github.com/emadocstechnologies/emalang">GitHub</a>
           </div>
         </div>
 

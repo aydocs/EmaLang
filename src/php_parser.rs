@@ -20,9 +20,9 @@ impl<'a> Parser<'a> {
     fn bump(&mut self) { self.cur = Some(self.lx.next()); }
 
     fn expect_semi(&mut self) -> Result<(), String> {
-        match self.cur.clone().unwrap() {
-            PhpTok::Semi(_) => { self.bump(); Ok(()) }
-            _ => Err("Expected ';'".to_string()),
+        match self.cur.clone() {
+            Some(PhpTok::Semi(_)) => { self.bump(); Ok(()) }
+            t => Err(format!("Expected ';', found {:?}", t)),
         }
     }
 
@@ -40,6 +40,11 @@ impl<'a> Parser<'a> {
                     let val = self.parse_expr()?;
                     self.expect_semi()?;
                     Ok(PhpStmt::Assign { name, value: val, span: sp })
+                } else if matches!(self.cur, Some(PhpTok::QuestionQuestionAssign(_))) {
+                    self.bump();
+                    let val = self.parse_expr()?;
+                    self.expect_semi()?;
+                    Ok(PhpStmt::Expr(PhpExpr::CoalesceAssign { name, value: Box::new(val), span: sp.clone() }, sp))
                 } else {
                     // expression statement starting with $var
                     let e = self.parse_postfix_from(PhpExpr::Var(name, sp.clone()))?;
@@ -204,7 +209,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<PhpExpr, String> {
-        self.parse_or()
+        self.parse_coalesce()
     }
 
     fn parse_or(&mut self) -> Result<PhpExpr, String> {
@@ -238,17 +243,50 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_cmp(&mut self) -> Result<PhpExpr, String> {
-        let mut left = self.parse_concat()?;
+        let mut left = self.parse_eq()?;
         loop {
             match self.cur.clone().unwrap() {
-                PhpTok::Less(sp) => { self.bump(); let r = self.parse_concat()?; left = PhpExpr::Binary { left: Box::new(left), op: "<".to_string(), right: Box::new(r), span: sp }; }
-                PhpTok::LessEq(sp) => { self.bump(); let r = self.parse_concat()?; left = PhpExpr::Binary { left: Box::new(left), op: "<=".to_string(), right: Box::new(r), span: sp }; }
-                PhpTok::Greater(sp) => { self.bump(); let r = self.parse_concat()?; left = PhpExpr::Binary { left: Box::new(left), op: ">".to_string(), right: Box::new(r), span: sp }; }
-                PhpTok::GreaterEq(sp) => { self.bump(); let r = self.parse_concat()?; left = PhpExpr::Binary { left: Box::new(left), op: ">=".to_string(), right: Box::new(r), span: sp }; }
+                PhpTok::Less(sp) => { self.bump(); let r = self.parse_eq()?; left = PhpExpr::Binary { left: Box::new(left), op: "<".to_string(), right: Box::new(r), span: sp }; }
+                PhpTok::LessEq(sp) => { self.bump(); let r = self.parse_eq()?; left = PhpExpr::Binary { left: Box::new(left), op: "<=".to_string(), right: Box::new(r), span: sp }; }
+                PhpTok::Greater(sp) => { self.bump(); let r = self.parse_eq()?; left = PhpExpr::Binary { left: Box::new(left), op: ">".to_string(), right: Box::new(r), span: sp }; }
+                PhpTok::GreaterEq(sp) => { self.bump(); let r = self.parse_eq()?; left = PhpExpr::Binary { left: Box::new(left), op: ">=".to_string(), right: Box::new(r), span: sp }; }
                 _ => break,
             }
         }
         Ok(left)
+    }
+
+    fn parse_add(&mut self) -> Result<PhpExpr, String> {
+        let mut left = self.parse_mul()?;
+        loop {
+            match self.cur.clone().unwrap() {
+                PhpTok::Plus(sp) => { self.bump(); let r = self.parse_mul()?; left = PhpExpr::Binary { left: Box::new(left), op: "+".to_string(), right: Box::new(r), span: sp }; }
+                PhpTok::Minus(sp) => { self.bump(); let r = self.parse_mul()?; left = PhpExpr::Binary { left: Box::new(left), op: "-".to_string(), right: Box::new(r), span: sp }; }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_mul(&mut self) -> Result<PhpExpr, String> {
+        let mut left = self.parse_unary()?;
+        loop {
+            match self.cur.clone().unwrap() {
+                PhpTok::Star(sp) => { self.bump(); let r = self.parse_unary()?; left = PhpExpr::Binary { left: Box::new(left), op: "*".to_string(), right: Box::new(r), span: sp }; }
+                PhpTok::Slash(sp) => { self.bump(); let r = self.parse_unary()?; left = PhpExpr::Binary { left: Box::new(left), op: "/".to_string(), right: Box::new(r), span: sp }; }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_unary(&mut self) -> Result<PhpExpr, String> {
+        // Simple unary: ! and -
+        match self.cur.clone().unwrap() {
+            PhpTok::Bang(sp) => { self.bump(); let e = self.parse_unary()?; Ok(PhpExpr::Binary { left: Box::new(PhpExpr::Bool(true, sp.clone())), op: "!".to_string(), right: Box::new(e), span: sp }) }
+            PhpTok::Minus(sp) => { self.bump(); let e = self.parse_unary()?; Ok(PhpExpr::Binary { left: Box::new(PhpExpr::Int(0, sp.clone())), op: "-".to_string(), right: Box::new(e), span: sp }) }
+            _ => self.parse_postfix(),
+        }
     }
 
     fn parse_concat(&mut self) -> Result<PhpExpr, String> {
@@ -266,26 +304,29 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    fn parse_add(&mut self) -> Result<PhpExpr, String> {
-        let mut left = self.parse_eq()?;
+    fn parse_eq(&mut self) -> Result<PhpExpr, String> {
+        let mut left = self.parse_concat()?;
         loop {
             match self.cur.clone().unwrap() {
-                PhpTok::Plus(sp) => { self.bump(); let r = self.parse_eq()?; left = PhpExpr::Binary { left: Box::new(left), op: "+".to_string(), right: Box::new(r), span: sp }; }
-                PhpTok::Minus(sp) => { self.bump(); let r = self.parse_eq()?; left = PhpExpr::Binary { left: Box::new(left), op: "-".to_string(), right: Box::new(r), span: sp }; }
+                PhpTok::EqEq(sp) => { self.bump(); let r = self.parse_concat()?; left = PhpExpr::Binary { left: Box::new(left), op: "==".to_string(), right: Box::new(r), span: sp }; }
+                PhpTok::BangEq(sp) => { self.bump(); let r = self.parse_concat()?; left = PhpExpr::Binary { left: Box::new(left), op: "!=".to_string(), right: Box::new(r), span: sp }; }
                 _ => break,
             }
         }
         Ok(left)
     }
 
-    fn parse_eq(&mut self) -> Result<PhpExpr, String> {
-        let mut left = self.parse_postfix()?;
+    fn parse_coalesce(&mut self) -> Result<PhpExpr, String> {
+        let mut left = self.parse_or()?;
         loop {
-            match self.cur.clone().unwrap() {
-                PhpTok::EqEq(sp) => { self.bump(); let r = self.parse_postfix()?; left = PhpExpr::Binary { left: Box::new(left), op: "==".to_string(), right: Box::new(r), span: sp }; }
-                PhpTok::BangEq(sp) => { self.bump(); let r = self.parse_postfix()?; left = PhpExpr::Binary { left: Box::new(left), op: "!=".to_string(), right: Box::new(r), span: sp }; }
-                _ => break,
+            if matches!(self.cur, Some(PhpTok::QuestionQuestion(_))) {
+                let sp = match self.cur.clone().unwrap() { PhpTok::QuestionQuestion(s) => s, _ => unreachable!() };
+                self.bump();
+                let right = self.parse_or()?;
+                left = PhpExpr::Coalesce { left: Box::new(left), right: Box::new(right), span: sp };
+                continue;
             }
+            break;
         }
         Ok(left)
     }
@@ -328,6 +369,28 @@ impl<'a> Parser<'a> {
                 expr = PhpExpr::Index { target: Box::new(expr), index: Box::new(idx), span: sp };
                 continue;
             }
+            if matches!(self.cur, Some(PhpTok::DoubleArrow(_))) {
+                let sp = match self.cur.clone().unwrap() { PhpTok::DoubleArrow(s) => s, _ => unreachable!() };
+                self.bump();
+                let prop = match self.cur.clone().unwrap() {
+                    PhpTok::Ident(s, _) => s,
+                    _ => return Err("Expected property name after '->'".to_string()),
+                };
+                self.bump();
+                expr = PhpExpr::Member { object: Box::new(expr), property: prop, span: sp };
+                continue;
+            }
+            if matches!(self.cur, Some(PhpTok::QuestionDot(_))) {
+                let sp = match self.cur.clone().unwrap() { PhpTok::QuestionDot(s) => s, _ => unreachable!() };
+                self.bump();
+                let prop = match self.cur.clone().unwrap() {
+                    PhpTok::Ident(s, _) => s,
+                    _ => return Err("Expected property name after '?->'".to_string()),
+                };
+                self.bump();
+                expr = PhpExpr::NullsafeMember { object: Box::new(expr), property: prop, span: sp };
+                continue;
+            }
             break;
         }
         Ok(expr)
@@ -342,6 +405,9 @@ impl<'a> Parser<'a> {
             PhpTok::Float(v, sp) => { self.bump(); Ok(PhpExpr::Float(v, sp)) }
             PhpTok::True(sp) => { self.bump(); Ok(PhpExpr::Bool(true, sp)) }
             PhpTok::False(sp) => { self.bump(); Ok(PhpExpr::Bool(false, sp)) }
+            PhpTok::Null(sp) => { self.bump(); Ok(PhpExpr::Null(sp)) }
+            PhpTok::Match(sp) => self.parse_match(sp),
+            PhpTok::Fn(sp) => self.parse_arrow_fn(sp),
             PhpTok::LParen(_) => {
                 self.bump();
                 let e = self.parse_expr()?;
@@ -354,7 +420,14 @@ impl<'a> Parser<'a> {
                 let mut items = Vec::new();
                 if !matches!(self.cur, Some(PhpTok::RBracket(_))) {
                     loop {
-                        items.push(self.parse_expr()?);
+                        let e = self.parse_expr()?;
+                        if matches!(self.cur, Some(PhpTok::Arrow(_))) {
+                            self.bump(); // =>
+                            let val = self.parse_expr()?;
+                            items.push((Some(e), val));
+                        } else {
+                            items.push((None, e));
+                        }
                         if matches!(self.cur, Some(PhpTok::Comma(_))) { self.bump(); continue; }
                         break;
                     }
@@ -387,8 +460,63 @@ impl<'a> Parser<'a> {
                 Ok(PhpExpr::ObjectLit { props, span: sp })
             }
             PhpTok::EOF(_) => Ok(PhpExpr::Null(Span { line: 0, col: 0 })),
-            _ => Err("Unexpected token in PHP expression".to_string()),
+            _ => Err(format!("Unexpected token in PHP expression: {:?}", self.cur)),
         }
+    }
+
+    fn parse_match(&mut self, sp: Span) -> Result<PhpExpr, String> {
+        self.bump(); // match
+        if !matches!(self.cur, Some(PhpTok::LParen(_))) { return Err("Expected '(' after match".to_string()); }
+        self.bump();
+        let discriminant = self.parse_expr()?;
+        if !matches!(self.cur, Some(PhpTok::RParen(_))) { return Err("Expected ')' after match value".to_string()); }
+        self.bump();
+        if !matches!(self.cur, Some(PhpTok::LBrace(_))) { return Err("Expected '{' for match body".to_string()); }
+        self.bump();
+        let mut cases = Vec::new();
+        let mut default = None;
+        while !matches!(self.cur, Some(PhpTok::RBrace(_))) && !matches!(self.cur, Some(PhpTok::EOF(_))) {
+            if matches!(self.cur, Some(PhpTok::Default(_))) {
+                self.bump();
+                if !matches!(self.cur, Some(PhpTok::Arrow(_))) { return Err("Expected '=>' after default".to_string()); }
+                self.bump();
+                let e = self.parse_expr()?;
+                default = Some(Box::new(e));
+            } else {
+                let cond = self.parse_expr()?;
+                if !matches!(self.cur, Some(PhpTok::Arrow(_))) { return Err("Expected '=>' in match case".to_string()); }
+                self.bump();
+                let res = self.parse_expr()?;
+                cases.push((Box::new(cond), Box::new(res)));
+            }
+            if matches!(self.cur, Some(PhpTok::Comma(_))) { self.bump(); }
+        }
+        if !matches!(self.cur, Some(PhpTok::RBrace(_))) { return Err("Expected '}'".to_string()); }
+        self.bump();
+        Ok(PhpExpr::Match { discriminant: Box::new(discriminant), cases, default, span: sp })
+    }
+
+    fn parse_arrow_fn(&mut self, sp: Span) -> Result<PhpExpr, String> {
+        self.bump(); // fn
+        if !matches!(self.cur, Some(PhpTok::LParen(_))) { return Err("Expected '(' after fn".to_string()); }
+        self.bump();
+        let mut params = Vec::new();
+        if !matches!(self.cur, Some(PhpTok::RParen(_))) {
+            loop {
+                match self.cur.clone().unwrap() {
+                    PhpTok::DollarIdent(n, _) => { self.bump(); params.push(n); }
+                    _ => return Err("Expected variable name in fn params".to_string()),
+                }
+                if matches!(self.cur, Some(PhpTok::Comma(_))) { self.bump(); continue; }
+                break;
+            }
+        }
+        if !matches!(self.cur, Some(PhpTok::RParen(_))) { return Err("Expected ')'".to_string()); }
+        self.bump();
+        if !matches!(self.cur, Some(PhpTok::Arrow(_))) { return Err("Expected '=>' in arrow function".to_string()); }
+        self.bump();
+        let body = self.parse_expr()?;
+        Ok(PhpExpr::ArrowFn { params, body: Box::new(body), span: sp })
     }
 }
 

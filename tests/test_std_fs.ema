@@ -1,0 +1,7 @@
+@server {
+    std::fs::write("test_io.txt", "Initial data.\n");
+    std::fs::append("test_io.txt", "Appended line.\n");
+    var content: Str = std::fs::read("test_io.txt");
+    print content;
+    std::fs::delete("test_io.txt");
+}

@@ -1,0 +1,8 @@
+@client {
+    <div css{ 
+        background: red; 
+        @media (max-width: 600px) { background: blue; } 
+    }>
+        <h1>Minimal Adv CSS</h1>
+    </div>
+}

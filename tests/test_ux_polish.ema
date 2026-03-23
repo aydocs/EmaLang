@@ -1,0 +1,39 @@
+@client {
+    state text = "Initial";
+    state count = 0;
+    state is_active = false;
+
+    <div class="ema-fade" css{ padding: 40px; text-align: center; }>
+        <h1 class="ema-scale" css{ color: var(--ema-primary); }>EMA UX Polish</h1>
+        
+        <div css{ margin: 20px 0; font-size: 1.2rem; }>
+            Status: <span data-ema-bind="text"></span>
+        </div>
+
+        <div css{ margin: 10px; }>
+            Counter: {{ count }}
+        </div>
+
+        <button class="ema-scale" onclick="set(text, 'Clicked!'); inc(count); set(is_active, !is_active)">
+            Interact
+        </button>
+
+        <div 
+            --active-color={{ is_active ? "#2ecc71" : "#ecf0f1" }}
+            css{ 
+                margin-top: 20px;
+                padding: 10px;
+                border-radius: 8px;
+                background: var(--active-color);
+                transition: background 0.5s ease;
+            }>
+            Active State Visualizer
+        </div>
+        
+        <input type="text" placeholder="Type something..." oninput="set(text, value)" css{ margin-top: 20px; padding: 8px; border: 1px solid #ccc; border-radius: 4px; } />
+    </div>
+}
+
+@server {
+    print "Phase 5 UX Polish Verified";
+}

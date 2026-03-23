@@ -1,0 +1,15 @@
+@server {
+    std::http::route("GET", "/", php {
+        echo "Hello World from Tokio & Axum!";
+    });
+
+    std::http::route("GET", "/json", php {
+        echo std::json::encode({
+            message: "This is a lightning fast async response",
+            server: "EMA natively powered by tokio"
+        });
+    }, 200, "application/json");
+
+    print "Booting EMA High-Performance Native Server on port 3030!";
+    std::http::serve(3030);
+}

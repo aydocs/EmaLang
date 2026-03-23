@@ -17,9 +17,23 @@ pub enum JsTok {
     While(Span),
     Return(Span),
     Function(Span),
+    Async(Span),
+    Await(Span),
     Try(Span),
     Catch(Span),
     Throw(Span),
+    Class(Span),
+    Constructor(Span),
+    Extends(Span),
+    Static(Span),
+    Switch(Span),
+    Case(Span),
+    Default(Span),
+    Break(Span),
+    Continue(Span),
+    New(Span),
+    This(Span),
+    Super(Span),
     LParen(Span),
     RParen(Span),
     LBrace(Span),
@@ -33,13 +47,17 @@ pub enum JsTok {
     Colon(Span),
     Question(Span),
     Plus(Span),
+    PlusPlus(Span),
     Minus(Span),
+    MinusMinus(Span),
     Star(Span),
     Slash(Span),
     Bang(Span),
     Eq(Span),
     EqEq(Span),
+    EqEqEq(Span),
     BangEq(Span),
+    BangEqEq(Span),
     Less(Span),
     LessEq(Span),
     Greater(Span),
@@ -178,19 +196,40 @@ impl<'a> JsLexer<'a> {
             ';' => { self.bump(); JsTok::Semi(sp) }
             ':' => { self.bump(); JsTok::Colon(sp) }
             '?' => { self.bump(); JsTok::Question(sp) }
-            '+' => { self.bump(); JsTok::Plus(sp) }
-            '-' => { self.bump(); JsTok::Minus(sp) }
+            '+' => {
+                self.bump();
+                if self.cur() == Some('+') { self.bump(); JsTok::PlusPlus(sp) } else { JsTok::Plus(sp) }
+            }
+            '-' => {
+                self.bump();
+                if self.cur() == Some('-') { self.bump(); JsTok::MinusMinus(sp) } else { JsTok::Minus(sp) }
+            }
             '*' => { self.bump(); JsTok::Star(sp) }
             '/' => { self.bump(); JsTok::Slash(sp) }
             '!' => {
                 self.bump();
-                if self.cur() == Some('=') { self.bump(); JsTok::BangEq(sp) } else { JsTok::Bang(sp) }
+                if self.cur() == Some('=') {
+                    self.bump();
+                    if self.cur() == Some('=') {
+                        self.bump();
+                        JsTok::BangEqEq(sp)
+                    } else {
+                        JsTok::BangEq(sp)
+                    }
+                } else {
+                    JsTok::Bang(sp)
+                }
             }
             '=' => {
                 self.bump();
                 if self.cur() == Some('=') {
                     self.bump();
-                    JsTok::EqEq(sp)
+                    if self.cur() == Some('=') {
+                        self.bump();
+                        JsTok::EqEqEq(sp)
+                    } else {
+                        JsTok::EqEq(sp)
+                    }
                 } else if self.cur() == Some('>') {
                     self.bump();
                     JsTok::Arrow(sp)
@@ -249,9 +288,23 @@ impl<'a> JsLexer<'a> {
                     "while" => JsTok::While(sp),
                     "return" => JsTok::Return(sp),
                     "function" => JsTok::Function(sp),
+                    "async" => JsTok::Async(sp),
+                    "await" => JsTok::Await(sp),
                     "try" => JsTok::Try(sp),
                     "catch" => JsTok::Catch(sp),
                     "throw" => JsTok::Throw(sp),
+                    "class" => JsTok::Class(sp),
+                    "constructor" => JsTok::Constructor(sp),
+                    "extends" => JsTok::Extends(sp),
+                    "static" => JsTok::Static(sp),
+                    "switch" => JsTok::Switch(sp),
+                    "case" => JsTok::Case(sp),
+                    "default" => JsTok::Default(sp),
+                    "break" => JsTok::Break(sp),
+                    "continue" => JsTok::Continue(sp),
+                    "new" => JsTok::New(sp),
+                    "this" => JsTok::This(sp),
+                    "super" => JsTok::Super(sp),
                     _ => JsTok::Ident(s, sp),
                 }
             }

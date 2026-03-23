@@ -1,0 +1,5 @@
+component MyButton(label: str) {
+    <button css{ padding: 10px 20px; background: #2ecc71; color: white; border-radius: 5px; border: none; cursor: pointer; }>
+        {{ label }}
+    </button>
+}

@@ -10,6 +10,7 @@ pub enum CssTok {
     Comma(Span),
     Hash(Span),
     Dot(Span),
+    AtDirective(String, Span),
     String(String, Span),
     Other(char, Span),
     EOF(Span),
@@ -59,6 +60,14 @@ impl<'a> CssLexer<'a> {
             ',' => { self.bump(); CssTok::Comma(sp) }
             '#' => { self.bump(); CssTok::Hash(sp) }
             '.' => { self.bump(); CssTok::Dot(sp) }
+            '@' => {
+                self.bump();
+                let mut s = String::new();
+                while let Some(ch) = self.cur() {
+                    if ch.is_alphanumeric() || ch == '-' || ch == '_' { s.push(ch); self.bump(); } else { break; }
+                }
+                CssTok::AtDirective(s, sp)
+            }
             '"' | '\'' => {
                 let q = c; self.bump();
                 let mut s = String::new();

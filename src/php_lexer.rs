@@ -28,6 +28,9 @@ pub enum PhpTok {
     Dot(Span),
     Plus(Span),
     Minus(Span),
+    Star(Span),
+    Slash(Span),
+    Percent(Span),
     Colon(Span),
     Less(Span),
     LessEq(Span),
@@ -35,8 +38,19 @@ pub enum PhpTok {
     GreaterEq(Span),
     EqEq(Span),
     BangEq(Span),
+    Arrow(Span),         // =>
+    DoubleArrow(Span),   // ->
+    Question(Span),
+    QuestionDot(Span),    // ?->
+    QuestionQuestion(Span), // ??
+    QuestionQuestionAssign(Span), // ??=
+    Fn(Span),
+    Match(Span),
+    Default(Span),
+    Null(Span),
     AndAnd(Span),
     OrOr(Span),
+    Bang(Span),
     EOF(Span),
 }
 
@@ -101,8 +115,25 @@ impl<'a> PhpLexer<'a> {
             ';' => { self.bump(); PhpTok::Semi(sp) }
             '.' => { self.bump(); PhpTok::Dot(sp) }
             ':' => { self.bump(); PhpTok::Colon(sp) }
+            '?' => {
+                self.bump();
+                match self.cur() {
+                    Some('-') => {
+                        self.bump();
+                        if self.cur() == Some('>') { self.bump(); PhpTok::QuestionDot(sp) } else { PhpTok::Question(sp) }
+                    }
+                    Some('?') => {
+                        self.bump();
+                        if self.cur() == Some('=') { self.bump(); PhpTok::QuestionQuestionAssign(sp) } else { PhpTok::QuestionQuestion(sp) }
+                    }
+                    _ => PhpTok::Question(sp)
+                }
+            }
             '+' => { self.bump(); PhpTok::Plus(sp) }
-            '-' => { self.bump(); PhpTok::Minus(sp) }
+            '-' => {
+                self.bump();
+                if self.cur() == Some('>') { self.bump(); PhpTok::DoubleArrow(sp) } else { PhpTok::Minus(sp) }
+            }
             '<' => {
                 self.bump();
                 if self.cur() == Some('=') { self.bump(); PhpTok::LessEq(sp) } else { PhpTok::Less(sp) }
@@ -119,13 +150,22 @@ impl<'a> PhpLexer<'a> {
                 self.bump();
                 if self.cur() == Some('|') { self.bump(); PhpTok::OrOr(sp) } else { self.next() }
             }
+            '*' => { self.bump(); PhpTok::Star(sp) }
+            '/' => { self.bump(); PhpTok::Slash(sp) }
+            '%' => { self.bump(); PhpTok::Percent(sp) }
             '=' => {
                 self.bump();
-                if self.cur() == Some('=') { self.bump(); PhpTok::EqEq(sp) } else { PhpTok::Assign(sp) }
+                if self.cur() == Some('=') {
+                     self.bump(); PhpTok::EqEq(sp) 
+                } else if self.cur() == Some('>') {
+                     self.bump(); PhpTok::Arrow(sp)
+                } else {
+                     PhpTok::Assign(sp) 
+                }
             }
             '!' => {
                 self.bump();
-                if self.cur() == Some('=') { self.bump(); PhpTok::BangEq(sp) } else { self.next() }
+                if self.cur() == Some('=') { self.bump(); PhpTok::BangEq(sp) } else { PhpTok::Bang(sp) }
             }
             '"' | '\'' => {
                 let q = c;
@@ -159,6 +199,10 @@ impl<'a> PhpLexer<'a> {
                     "else" => PhpTok::Else(sp),
                     "while" => PhpTok::While(sp),
                     "for" => PhpTok::For(sp),
+                    "fn" => PhpTok::Fn(sp),
+                    "match" => PhpTok::Match(sp),
+                    "default" => PhpTok::Default(sp),
+                    "null" | "NULL" => PhpTok::Null(sp),
                     _ => PhpTok::Ident(ident, sp),
                 }
             }

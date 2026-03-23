@@ -3,15 +3,14 @@ model User {
     age: int
 }
 
-print "--- ema db native sqlite test ---";
-print "Adding users to SQLite database";
+// print "--- ema db native sqlite test ---";
+// print "Adding users to SQLite database";
 
 User::insert("Core Architect", 45);
 User::insert("AI Assistant", 1);
 
-print "--- ema web direct hosting ---";
-var port = 8080;
-std::http::serve(port);
+// print "--- ema web direct hosting ---";
+std::http::serve();
 
 @server {
     print "core modules access: OK";

@@ -1,0 +1,35 @@
+@client {
+    state theme_color = "#3498db";
+    state is_expanded = false;
+    
+    <div class="ema-fade" 
+         --bg-color={{ theme_color }}
+         --scale={{ is_expanded ? "1.1" : "1.0" }}
+         css{
+            padding: 20px;
+            background: var(--bg-color);
+            transform: scale(var(--scale));
+            transition: all 0.5s ease;
+            
+            @media (max-width: 600px) {
+                background: #e74c3c;
+            }
+         }>
+        <h1 css{ animation: fadeIn 1s; }>Advanced CSS-in-EMA</h1>
+        <p>Theme Color: {{ theme_color }}</p>
+        
+        <button class="ema-scale" onclick="set(theme_color, '#2ecc71')">Go Green</button>
+        <button class="ema-scale" onclick="set(is_expanded, !is_expanded)">Toggle Scale</button>
+    </div>
+
+    css{
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+    }
+}
+
+@server {
+    print "CSS Enhancements Verified";
+}

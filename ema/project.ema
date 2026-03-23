@@ -1,0 +1,11 @@
+@server {
+    print "EMA Server Started! Port: 3000";
+    std::http::serve();
+}
+
+@client {
+    <div style: "padding: 50px; text-align: center; font-family: sans-serif;">
+        <h1> "Hello Ema!" </h1>
+        <p> "You have started a great project with EmaLang." </p>
+    </div>;
+}

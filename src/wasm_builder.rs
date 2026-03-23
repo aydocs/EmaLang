@@ -1,4 +1,8 @@
-use crate::ast::{CssStylesheet, Expr, HtmlAttrValue, HtmlNode, JsExpr, JsParam, JsPattern, JsProgram, JsStmt, JsTemplatePart, JsVarKind, Program, Stmt, EmbeddedKind};
+use crate::ast::{CssStylesheet, Expr, HtmlAttrValue, HtmlNode, JsExpr, JsParam, JsPattern, JsProgram, JsStmt, JsTemplatePart, JsVarKind, Program, Stmt, EmbeddedKind, BinaryOp};
+use wasm_encoder::{
+    CodeSection, ExportSection, Function, FunctionSection, ImportSection, Instruction,
+    Module, TypeSection, ValType, MemorySection, MemoryType,
+};
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
@@ -8,6 +12,10 @@ pub struct WasmBuilder {
     client_scripts: Vec<String>,
     state_vars: HashSet<String>,
     state_inits: Vec<String>,
+    wasm_module: Module,
+    components: std::collections::HashMap<String, (Vec<String>, Vec<Stmt>)>,
+    pub tailwind_needed: bool,
+    pub bootstrap_needed: bool,
 }
 
 impl WasmBuilder {
@@ -27,72 +35,60 @@ impl WasmBuilder {
         js.push_str("    this.bindings = [];\n");
         js.push_str("    this.computed = this.computed || {};\n");
         js.push_str("    if (!root) return;\n");
-        js.push_str("    root.querySelectorAll('[data-ema-bind]').forEach(el => {\n");
-        js.push_str("      const key = el.getAttribute('data-ema-bind');\n");
-        js.push_str("      if (!key) return;\n");
-        js.push_str("      const expr = el.getAttribute('data-ema-expr');\n");
-        js.push_str("      if (expr && !this.computed[key]) {\n");
-        js.push_str("        try { this.computed[key] = new Function('state', 'return (' + expr + ')'); } catch (e) {}\n");
+        js.push_str("    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null, false);\n");
+        js.push_str("    let node;\n");
+        js.push_str("    while(node = walker.nextNode()) {\n");
+        js.push_str("      if (node.nodeType === Node.ELEMENT_NODE) {\n");
+        js.push_str("        const key = node.getAttribute('data-ema-bind');\n");
+        js.push_str("        if (key) {\n");
+        js.push_str("          const expr = node.getAttribute('data-ema-expr');\n");
+        js.push_str("          if (expr && !this.computed[key]) {\n");
+        js.push_str("             try { this.computed[key] = new Function('state', 'return (' + expr + ')'); } catch (e) {}\n");
+        js.push_str("          }\n");
+        js.push_str("          this.bindings.push({ key, node: node, prev: undefined });\n");
+        js.push_str("        }\n");
+        js.push_str("      } else if (node.nodeType === Node.TEXT_NODE && node.parentElement && node.parentElement.hasAttribute('data-ema-bind')) {\n");
+        js.push_str("         const key = node.parentElement.getAttribute('data-ema-bind');\n");
+        js.push_str("         if (key) this.bindings.push({ key, node: node, prev: undefined });\n");
         js.push_str("      }\n");
-        js.push_str("      this.bindings.push({ key, node: el });\n");
-        js.push_str("    });\n");
+        js.push_str("    }\n");
         js.push_str("  },\n");
         js.push_str("  wireDomEvents: function(root) {\n");
-        js.push_str("    if (!root) return;\n");
-        js.push_str("    root.querySelectorAll('[data-ema-onclick]').forEach(el => {\n");
-        js.push_str("      const spec = el.getAttribute('data-ema-onclick');\n");
-        js.push_str("      if (!spec) return;\n");
-        js.push_str("      el.onclick = () => {\n");
-        js.push_str("        const mInc = spec.match(/^\\s*inc\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*$/);\n");
-        js.push_str("        const mDec = spec.match(/^\\s*dec\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*$/);\n");
-        js.push_str("        const mTog = spec.match(/^\\s*toggle\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*$/);\n");
-        js.push_str("        const mSet = spec.match(/^\\s*set\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*,\\s*(.+)\\s*\\)\\s*$/);\n");
-        js.push_str("        if (mInc) { const k = mInc[1]; this.setState(k, ((this.state[k] ?? 0) + 1)); return; }\n");
-        js.push_str("        if (mDec) { const k = mDec[1]; this.setState(k, ((this.state[k] ?? 0) - 1)); return; }\n");
-        js.push_str("        if (mTog) { const k = mTog[1]; this.setState(k, !(this.state[k] ?? false)); return; }\n");
-        js.push_str("        if (mSet) {\n");
-        js.push_str("          const k = mSet[1];\n");
-        js.push_str("          let raw = String(mSet[2]).trim();\n");
-        js.push_str("          let v = raw;\n");
-        js.push_str("          if (/^\\d+(\\.\\d+)?$/.test(raw)) v = Number(raw);\n");
-        js.push_str("          else if (raw === 'true') v = true;\n");
-        js.push_str("          else if (raw === 'false') v = false;\n");
-        js.push_str("          else if ((raw.startsWith('\"') && raw.endsWith('\"')) || (raw.startsWith(\"'\") && raw.endsWith(\"'\"))) v = raw.slice(1, -1);\n");
-        js.push_str("          this.setState(k, v);\n");
-        js.push_str("          return;\n");
-        js.push_str("        }\n");
-        js.push_str("      };\n");
+        js.push_str("    if (!root || root._ema_wired) return;\n");
+        js.push_str("    root._ema_wired = true;\n");
+        js.push_str("    root.addEventListener('click', (ev) => {\n");
+        js.push_str("      const el = ev.target.closest('[data-ema-click]');\n");
+        js.push_str("      if (!el) return;\n");
+        js.push_str("      const spec = el.getAttribute('data-ema-click');\n");
+        js.push_str("      if (spec) this.executeAction(spec, el, ev);\n");
         js.push_str("    });\n");
-        js.push_str("    const wireValueEvent = (attr, evtName) => {\n");
-        js.push_str("      root.querySelectorAll('[' + attr + ']').forEach(el => {\n");
-        js.push_str("        const spec = el.getAttribute(attr);\n");
-        js.push_str("        if (!spec) return;\n");
-        js.push_str("        el.addEventListener(evtName, (ev) => {\n");
-        js.push_str("          const mSetVal = spec.match(/^\\s*set\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*,\\s*value\\s*\\)\\s*$/);\n");
-        js.push_str("          const mSet = spec.match(/^\\s*set\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*,\\s*(.+)\\s*\\)\\s*$/);\n");
-        js.push_str("          if (mSetVal) {\n");
-        js.push_str("            const k = mSetVal[1];\n");
-        js.push_str("            const t = ev && ev.target ? ev.target : el;\n");
-        js.push_str("            const raw = (t && (t.value !== undefined)) ? String(t.value) : '';\n");
-        js.push_str("            this.setState(k, raw);\n");
-        js.push_str("            return;\n");
-        js.push_str("          }\n");
-        js.push_str("          if (mSet) {\n");
-        js.push_str("            const k = mSet[1];\n");
-        js.push_str("            let raw = String(mSet[2]).trim();\n");
-        js.push_str("            let v = raw;\n");
-        js.push_str("            if (/^\\d+(\\.\\d+)?$/.test(raw)) v = Number(raw);\n");
-        js.push_str("            else if (raw === 'true') v = true;\n");
-        js.push_str("            else if (raw === 'false') v = false;\n");
-        js.push_str("            else if ((raw.startsWith('\"') && raw.endsWith('\"')) || (raw.startsWith(\"'\") && raw.endsWith(\"'\"))) v = raw.slice(1, -1);\n");
-        js.push_str("            this.setState(k, v);\n");
-        js.push_str("            return;\n");
-        js.push_str("          }\n");
-        js.push_str("        });\n");
+        js.push_str("    ['input', 'change'].forEach(evt => {\n");
+        js.push_str("      const attr = 'data-ema-on' + evt;\n");
+        js.push_str("      root.addEventListener(evt, (ev) => {\n");
+        js.push_str("        const el = ev.target.closest('[' + attr + ']');\n");
+        js.push_str("        if (el) this.executeAction(el.getAttribute(attr), el, ev);\n");
         js.push_str("      });\n");
-        js.push_str("    };\n");
-        js.push_str("    wireValueEvent('data-ema-oninput', 'input');\n");
-        js.push_str("    wireValueEvent('data-ema-onchange', 'change');\n");
+        js.push_str("    });\n");
+        js.push_str("  },\n");
+        js.push_str("  executeAction: function(spec, el, ev) {\n");
+        js.push_str("    const mInc = spec.match(/^\\s*inc\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*$/);\n");
+        js.push_str("    const mDec = spec.match(/^\\s*dec\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*$/);\n");
+        js.push_str("    const mTog = spec.match(/^\\s*toggle\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)\\s*$/);\n");
+        js.push_str("    const mSetVal = spec.match(/^\\s*set\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*,\\s*value\\s*\\)\\s*$/);\n");
+        js.push_str("    const mSet = spec.match(/^\\s*set\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*,\\s*(.+)\\s*\\)\\s*$/);\n");
+        js.push_str("    if (mInc) { this.setState(mInc[1], (this.state[mInc[1]]??0)+1); }\n");
+        js.push_str("    else if (mDec) { this.setState(mDec[1], (this.state[mDec[1]]??0)-1); }\n");
+        js.push_str("    else if (mTog) { this.setState(mTog[1], !(this.state[mTog[1]]??false)); }\n");
+        js.push_str("    else if (mSetVal) { this.setState(mSetVal[1], String(el.value || '')); }\n");
+        js.push_str("    else if (mSet) {\n");
+        js.push_str("      const k = mSet[1]; let raw = String(mSet[2]).trim(); let v = raw;\n");
+        js.push_str("      if (/^\\d+(\\.\\d+)?$/.test(raw)) v = Number(raw);\n");
+        js.push_str("      else if (raw === 'true') v = true; else if (raw === 'false') v = false;\n");
+        js.push_str("      else if ((raw.startsWith('\"') && raw.endsWith('\"')) || (raw.startsWith(\"'\") && raw.endsWith(\"'\"))) v = raw.slice(1, -1);\n");
+        js.push_str("      this.setState(k, v);\n");
+        js.push_str("    } else {\n");
+        js.push_str("      try { (new Function('state', 'el', 'ev', spec)).call(el, this.state, el, ev); } catch(e) { console.error(e); }\n");
+        js.push_str("    }\n");
         js.push_str("  },\n");
         js.push_str("  setState: function(key, value) {\n");
         js.push_str("    this.state[key] = value;\n");
@@ -123,8 +119,27 @@ impl WasmBuilder {
         js.push_str("    const actual = (window.__EMA_BUILD__ && window.__EMA_BUILD__.hash) ? String(window.__EMA_BUILD__.hash) : '';\n");
         js.push_str("    const canHydrate = expected && actual && expected === actual;\n");
         js.push_str("    if (!canHydrate && actual) console.warn('[EMA] SSR build hash mismatch; client render fallback', { expected, actual });\n");
-        js.push_str("    // If SSR already populated #ema-root and hashes match, bind to it without clearing.\n");
-        js.push_str("    if (canHydrate && root && root.childNodes && root.childNodes.length > 0) {\n");
+        // Inject base layout styles
+        js.push_str("  const baseStyle = document.createElement('style');\n");
+        js.push_str("  baseStyle.textContent = `\n");
+        js.push_str("    :root {\n");
+        js.push_str("      --ema-primary: #3498db;\n");
+        js.push_str("      --ema-bg: #ffffff;\n");
+        js.push_str("      --ema-text: #2c3e50;\n");
+        js.push_str("      --ema-transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);\n");
+        js.push_str("    }\n");
+        js.push_str("    *, *::before, *::after { box-sizing: border-box; }\n");
+        js.push_str("    html, body { margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; color: var(--ema-text); background: var(--ema-bg); }\n");
+        js.push_str("    #ema-root { isolation: isolate; }\n");
+        js.push_str("    .ema-fade { transition: opacity 0.3s ease; }\n");
+        js.push_str("    .ema-slide { transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1); }\n");
+        js.push_str("    .ema-scale { transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); }\n");
+        js.push_str("    .ema-scale:active { transform: scale(0.95); }\n");
+        js.push_str("    [data-ema-css-var] { transition: var(--ema-transition); }\n");
+        js.push_str("  `;\n");
+        js.push_str("  document.head.appendChild(baseStyle);\n");
+        
+        js.push_str("  if (canHydrate && root && root.childNodes && root.childNodes.length > 0) {\n");
         js.push_str("      this.hydrateBindingsFromDom(root);\n");
         js.push_str("      this.wireDomEvents(root);\n");
         js.push_str("      this.updateBindings();\n");
@@ -150,10 +165,92 @@ impl WasmBuilder {
             client_scripts: Vec::new(),
             state_vars: HashSet::new(),
             state_inits: Vec::new(),
+            wasm_module: Module::new(),
+            components: std::collections::HashMap::new(),
+            tailwind_needed: false,
+            bootstrap_needed: false,
         }
     }
 
-    pub fn build_frontend(&mut self, program: &Program) -> String {
+    pub fn build_frontend(&mut self, program: &Program) -> (String, Vec<u8>) {
+        // 1. Prepare WASM logic
+        let mut types = TypeSection::new();
+        let mut imports = ImportSection::new();
+        let mut functions = FunctionSection::new();
+        let mut exports = ExportSection::new();
+        let mut globals = wasm_encoder::GlobalSection::new();
+        let mut code = CodeSection::new();
+        let mut memory = MemorySection::new();
+
+    // (import "env" "ema_dom_create" (func (param i32) (result i32)))
+    types.ty().function(vec![ValType::I32], vec![ValType::I32]); // Type 0: i32 -> i32
+    imports.import("env", "ema_dom_create", wasm_encoder::EntityType::Function(0));
+    
+    // Example logic: EMA Internal "Render" function
+    types.ty().function(vec![], vec![]); // Type 1: void -> void
+    functions.function(1);
+    exports.export("ema_render", wasm_encoder::ExportKind::Func, 0);
+
+    let mut f = Function::new(vec![]);
+    f.instruction(&Instruction::End);
+    code.function(&f);
+
+    memory.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+
+        self.wasm_module.section(&types);
+        self.wasm_module.section(&imports);
+        self.wasm_module.section(&functions);
+        self.wasm_module.section(&exports);
+        self.wasm_module.section(&globals);
+        self.wasm_module.section(&memory);
+        self.wasm_module.section(&code);
+
+        // 2. Prepare JS Wrapper
+        let mut components_js = String::new();
+        for stmt in &program.statements {
+            if let Stmt::ComponentDecl { name, props, body, .. } = stmt {
+                self.components.insert(name.clone(), (props.iter().map(|(n, _)| n.clone()).collect(), body.clone()));
+                
+                components_js.push_str(&format!("function {}(props) {{\n", name));
+                components_js.push_str("  const parent = document.createDocumentFragment();\n");
+                for (p_name, _) in props {
+                    components_js.push_str(&format!("  const {} = props['{}'];\n", p_name, p_name));
+                }
+                
+                let old_js = std::mem::take(&mut self.js_output);
+                for s in body {
+                    self.compile_js(s, 2);
+                }
+                components_js.push_str(&self.js_output);
+                self.js_output = old_js;
+                
+                components_js.push_str("  return parent.childNodes.length === 1 ? parent.firstChild : parent;\n");
+                components_js.push_str("}\n\n");
+            }
+        }
+        
+        if (!components_js.is_empty()) {
+            self.js_output = self.js_output.replace("const EmaApp = {\n", &format!("{}const EmaApp = {{\n", components_js));
+        }
+
+        // Add WASM instantiation logic to EmaApp.init
+        self.js_output = self.js_output.replace(
+            "this.render();",
+            "this.fetchAndInstantiateWasm().then(() => this.render());"
+        );
+
+        // Inject fetchAndInstantiateWasm method
+        self.js_output = self.js_output.replace(
+            "  init: function() {",
+            "  fetchAndInstantiateWasm: async function() {\n    try {\n      const res = await fetch('frontend.wasm');\n      const { instance } = await WebAssembly.instantiateStreaming(res, {\n        env: {\n          ema_dom_create: (tagPtr) => { /* logic here */ return 0; }\n        }\n      });\n      this.wasm = instance.exports;\n      console.log('[EMA WASM] Binary Module Loaded');\n    } catch (e) { console.warn('[EMA WASM] Loading failed, binary logic disabled', e); }\n  },\n  init: function() {"
+        );
+
         for stmt in &program.statements {
             if let Stmt::ClientBlock(client_stmts, _) = stmt {
                 for c_stmt in client_stmts {
@@ -212,7 +309,18 @@ impl WasmBuilder {
         self.js_output.push_str("        if (v === undefined && this.computed && this.computed[b.key]) {\n");
         self.js_output.push_str("          try { v = this.computed[b.key](this.state); } catch (e) { v = ''; }\n");
         self.js_output.push_str("        }\n");
-        self.js_output.push_str("        b.node.textContent = (v === undefined || v === null) ? '' : String(v);\n");
+        self.js_output.push_str("        const val = (v === undefined || v === null) ? '' : String(v);\n");
+        self.js_output.push_str("        if (b.prev === val) continue;\n");
+        self.js_output.push_str("        b.prev = val;\n");
+        self.js_output.push_str("        if (b.node.nodeType === Node.TEXT_NODE) {\n");
+        self.js_output.push_str("          b.node.textContent = val;\n");
+        self.js_output.push_str("        } else if (b.node.nodeType === Node.ELEMENT_NODE) {\n");
+        self.js_output.push_str("           if (b.node.dataset.emaCssVar) {\n");
+        self.js_output.push_str("             b.node.style.setProperty(b.node.dataset.emaCssVar, val);\n");
+        self.js_output.push_str("           } else {\n");
+        self.js_output.push_str("             b.node.textContent = val;\n");
+        self.js_output.push_str("           }\n");
+        self.js_output.push_str("        }\n");
         self.js_output.push_str("      } catch (e) {}\n");
         self.js_output.push_str("    }\n");
         self.js_output.push_str("  },\n");
@@ -236,10 +344,69 @@ impl WasmBuilder {
         self.js_output.push_str("};\n");
         self.js_output.push_str("\n// Bootstrap on load\ndocument.addEventListener('DOMContentLoaded', () => EmaApp.init());\n");
         
-        self.js_output.clone()
+        (self.js_output.clone(), self.wasm_module.clone().finish())
     }
 
-    pub fn build_ssr_html(&self, program: &Program) -> String {
+    fn compile_expr_wasm(&self, expr: &Expr, f: &mut Function) {
+        match expr {
+            Expr::IntLit(i, _) => {
+                f.instruction(&Instruction::I32Const(*i as i32));
+            }
+            Expr::Binary {
+                left,
+                op,
+                right,
+                ..
+            } => {
+                self.compile_expr_wasm(left, f);
+                self.compile_expr_wasm(right, f);
+                match op {
+                    BinaryOp::Add => {
+                        f.instruction(&Instruction::I32Add);
+                    }
+                    BinaryOp::Sub => {
+                        f.instruction(&Instruction::I32Sub);
+                    }
+                    BinaryOp::Mul => {
+                        f.instruction(&Instruction::I32Mul);
+                    }
+                    BinaryOp::Div => {
+                        f.instruction(&Instruction::I32DivS);
+                    }
+                    BinaryOp::EqEq => {
+                        f.instruction(&Instruction::I32Eq);
+                    }
+                    BinaryOp::Less => {
+                        f.instruction(&Instruction::I32LtS);
+                    }
+                    BinaryOp::Greater => {
+                        f.instruction(&Instruction::I32GtS);
+                    }
+                    _ => {
+                        f.instruction(&Instruction::I32Const(0));
+                    }
+                }
+            }
+            Expr::Identifier(name, _) => {
+                // Simplified: treat as a global index if it's a known state var
+                // In a full implementation, we'd have a name -> index map.
+                f.instruction(&Instruction::GlobalGet(0)); 
+            }
+            Expr::Ternary { condition, then_expr, else_expr, .. } => {
+                self.compile_expr_wasm(condition, f);
+                f.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I32)));
+                self.compile_expr_wasm(then_expr, f);
+                f.instruction(&Instruction::Else);
+                self.compile_expr_wasm(else_expr, f);
+                f.instruction(&Instruction::End);
+            }
+            _ => {
+                f.instruction(&Instruction::I32Const(0));
+            }
+        }
+    }
+
+    pub fn build_ssr_html(&mut self, program: &Program) -> String {
         // MVP SSR: render UI AST nodes and/or concatenate embedded HTML blocks found in @client.
         // The runtime will inject this into #ema-root for initial paint.
         let mut out = String::new();
@@ -270,9 +437,25 @@ impl WasmBuilder {
         out
     }
 
-    pub fn build_ssr_css(&self, program: &Program) -> String {
+    pub fn build_ssr_css(&mut self, program: &Program) -> String {
         // SSR CSS bundle: combine global client css blocks and component-scoped css props.
         let mut out = String::new();
+        out.push_str("/* EMA Premium Reset & Transitions */\n");
+        out.push_str(":root {\n");
+        out.push_str("  --ema-primary: #3498db;\n");
+        out.push_str("  --ema-bg: #ffffff;\n");
+        out.push_str("  --ema-text: #2c3e50;\n");
+        out.push_str("  --ema-transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);\n");
+        out.push_str("}\n");
+        out.push_str("*, *::before, *::after { box-sizing: border-box; }\n");
+        out.push_str("html, body { margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; color: var(--ema-text); background: var(--ema-bg); }\n");
+        out.push_str("#ema-root { isolation: isolate; }\n\n");
+        out.push_str(".ema-fade { transition: opacity 0.3s ease; }\n");
+        out.push_str(".ema-slide { transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1); }\n");
+        out.push_str(".ema-scale { transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); }\n");
+        out.push_str(".ema-scale:active { transform: scale(0.95); }\n");
+        out.push_str("[data-ema-css-var] { transition: var(--ema-transition); }\n\n");
+
         for stmt in &program.statements {
             if let Stmt::ClientBlock(client_stmts, _) = stmt {
                 for c_stmt in client_stmts {
@@ -285,7 +468,7 @@ impl WasmBuilder {
         out
     }
 
-    fn collect_ssr_css_from_expr(&self, expr: &Expr, out: &mut String) {
+    fn collect_ssr_css_from_expr(&mut self, expr: &Expr, out: &mut String) {
         match expr {
             Expr::EmbeddedBlock { kind: EmbeddedKind::Css, raw, .. } => {
                 // Global client css blocks are already scoped to #ema-root in JS builder; reuse same behavior for SSR.
@@ -296,25 +479,38 @@ impl WasmBuilder {
                 }
             }
             Expr::CssAst { stylesheet, .. } => {
-                let raw = Self::render_css_stylesheet(stylesheet);
+                let raw = self.render_css_stylesheet(stylesheet);
                 let scoped = Self::scope_css(&raw, "#ema-root");
                 out.push_str(&scoped);
                 if !scoped.ends_with('\n') {
                     out.push('\n');
                 }
             }
-            Expr::UiElement { props, children, .. } => {
+            Expr::UiElement { tag, props, children, .. } => {
+                if let Some((_, body)) = self.components.get(tag) {
+                    let body_cloned = body.clone();
+                    for stmt in body_cloned {
+                        if let Stmt::ExprStmt(e, _) = stmt {
+                            self.collect_ssr_css_from_expr(&e, out);
+                        }
+                    }
+                }
+
                 if let Some((css_raw, class_name)) = props.get("css").and_then(|v| match v {
                     Expr::EmbeddedBlock { kind: EmbeddedKind::Css, raw, .. } => {
                         Some((raw.clone(), Self::css_class_name(raw)))
                     }
                     Expr::CssAst { stylesheet, .. } => {
-                        let raw = Self::render_css_stylesheet(stylesheet);
+                        let raw = self.render_css_stylesheet(stylesheet);
                         Some((raw.clone(), Self::css_class_name(&raw)))
                     }
                     _ => None,
                 }) {
-                    let scoped = Self::scope_css(&css_raw, &format!(".{}", class_name));
+                    let mut final_css = css_raw.trim().to_string();
+                    if !final_css.contains('{') && !final_css.is_empty() {
+                        final_css = format!("{{ {} }}", final_css);
+                    }
+                    let scoped = Self::scope_css(&final_css, &format!(".{}", class_name));
                     out.push_str(&scoped);
                     if !scoped.ends_with('\n') {
                         out.push('\n');
@@ -324,13 +520,30 @@ impl WasmBuilder {
                     self.collect_ssr_css_from_expr(c, out);
                 }
             }
+            Expr::Ternary { then_expr, else_expr, .. } => {
+                self.collect_ssr_css_from_expr(then_expr, out);
+                self.collect_ssr_css_from_expr(else_expr, out);
+            }
             _ => {}
         }
     }
 
-    fn render_ssr_expr(&self, expr: &Expr) -> String {
+    fn render_ssr_expr(&mut self, expr: &Expr) -> String {
         match expr {
             Expr::UiElement { tag, props, children, .. } => {
+                if let Some((_, body)) = self.components.get(tag) {
+                    let mut expanded = String::new();
+                    let body_cloned = body.clone();
+                    for stmt in body_cloned {
+                        match stmt {
+                            Stmt::ExprStmt(e, _) => expanded.push_str(&self.render_ssr_expr(&e)),
+                            Stmt::ReturnStmt(Some(e), _) => expanded.push_str(&self.render_ssr_expr(&e)),
+                            _ => {}
+                        }
+                    }
+                    return expanded;
+                }
+
                 let mut out = String::new();
                 out.push('<');
                 out.push_str(tag);
@@ -340,7 +553,7 @@ impl WasmBuilder {
                         Some((raw.clone(), Self::css_class_name(raw)))
                     }
                     Expr::CssAst { stylesheet, .. } => {
-                        let raw = Self::render_css_stylesheet(stylesheet);
+                        let raw = self.render_css_stylesheet(stylesheet);
                         Some((raw.clone(), Self::css_class_name(&raw)))
                     }
                     _ => None,
@@ -396,6 +609,8 @@ impl WasmBuilder {
             }
             Expr::EmbeddedBlock { kind: EmbeddedKind::Html, raw, .. } => raw.clone(),
             Expr::HtmlAst { root, .. } => Self::render_html_node(root),
+            Expr::ClientScript(_, _) => String::new(),
+            Expr::ServerScript(_, _) => String::new(),
             _ => String::new(),
         }
     }
@@ -417,14 +632,22 @@ impl WasmBuilder {
                 let val_str = self.compile_expr(expr);
                 self.js_output.push_str(&format!("{}console.log({});\n", pad, val_str));
             }
-            Stmt::VarDecl { name, value, span: _ } => {
+            Stmt::VarDecl { name, value, .. } => {
                 let val_str = self.compile_expr(value);
                 self.js_output.push_str(&format!("{}const {} = {};\n", pad, name, val_str));
             }
-            Stmt::StateDecl { name, value, span: _ } => {
+            Stmt::StateDecl { name, value, .. } => {
                 let val_str = self.compile_expr(value);
                 self.js_output.push_str(&format!("{}EmaApp.state[\"{}\"] = {};\n", pad, name, val_str));
                 self.js_output.push_str(&format!("{}console.log('[EMA-LIVE] Reactive State Registered: {}');\n", pad, name));
+            }
+            Stmt::AssignStmt { name, value, .. } => {
+                let val_str = self.compile_expr(value);
+                if self.state_vars.contains(name) {
+                    self.js_output.push_str(&format!("{}EmaApp.setState(\"{}\", {});\n", pad, name, val_str));
+                } else {
+                    self.js_output.push_str(&format!("{}{} = {};\n", pad, name, val_str));
+                }
             }
             Stmt::ExprStmt(expr, _) => {
                 let val_str = self.compile_expr(expr);
@@ -433,26 +656,47 @@ impl WasmBuilder {
                 self.js_output.push_str(&format!("{}  if (_res instanceof HTMLElement) {{ parent.appendChild(_res); }}\n", pad));
                 self.js_output.push_str(&format!("{}}}\n", pad));
             }
-            // Add translation for specific DOM manipulations here later
+            Stmt::FnDecl { name, params, body, is_async, .. } => {
+                let p_names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+                let async_pfx = if *is_async { "async " } else { "" };
+                self.js_output.push_str(&format!("{}{}function {}({}) {{\n", pad, async_pfx, name, p_names.join(", ")));
+                for s in body {
+                    self.compile_js(s, indent + 2);
+                }
+                self.js_output.push_str(&format!("{}}}\n", pad));
+            }
+            Stmt::ComponentDecl { .. } => {
+                // Handled globally in build_frontend. Do nothing here.
+            }
+            Stmt::ReturnStmt(expr_opt, _) => {
+                let val = if let Some(e) = expr_opt {
+                    self.compile_expr(e)
+                } else {
+                    "undefined".to_string()
+                };
+                self.js_output.push_str(&format!("{}return {};\n", pad, val));
+            }
             _ => {
-                self.js_output.push_str(&format!("{}/* [WASM] Atlanan Islem: {:?} */\n", pad, stmt));
+                self.js_output.push_str(&format!("{}/* [WASM] Skipped Operation: {:?} */\n", pad, stmt));
             }
         }
     }
 
-    fn compile_expr(&self, expr: &Expr) -> String {
+    fn compile_expr(&mut self, expr: &Expr) -> String {
         match expr {
             Expr::StringLit(s, _) => format!("\"{}\"", s), // Basic JS string translation
             Expr::IntLit(i, _) => format!("{}", i),
             Expr::FloatLit(f, _) => format!("{}", f),
             Expr::BoolLit(b, _) => if *b { "true".to_string() } else { "false".to_string() },
+            Expr::Await(inner, _) => format!("(await {})", self.compile_expr(inner)),
             Expr::Identifier(ident, _) => {
-                // In UI trees, bare identifiers are often used as text (e.g. <h1> Hello </h1>).
-                // If it's not a known reactive state var, treat it as a string literal.
+                // If it's a known reactive state var, use state access.
                 if self.state_vars.contains(ident) {
                     format!("EmaApp.state[\"{}\"]", ident)
                 } else {
-                    format!("\"{}\"", Self::escape_js_string(ident))
+                    // For bootstrap, treat as a local JS identifier. 
+                    // Quoting as string was too aggressive for logic blocks.
+                    ident.clone()
                 }
             }
             Expr::EmbeddedBlock { kind, raw, span: _ } => {
@@ -491,7 +735,7 @@ impl WasmBuilder {
                         format!("((() => {{ const styleEl = document.createElement('style'); styleEl.textContent = `{}`; document.head.appendChild(styleEl); return null; }})())", tpl)
                     }
                     EmbeddedKind::Js => {
-                        // JS blocks are lifted into `clientScripts` during build_frontend.
+                        self.client_scripts.push(raw.clone());
                         "null".to_string()
                     }
                     EmbeddedKind::Php => {
@@ -527,13 +771,13 @@ impl WasmBuilder {
                 )
             }
             Expr::CssAst { stylesheet, .. } => {
-                let raw = Self::render_css_stylesheet(stylesheet);
+                let raw = self.render_css_stylesheet(stylesheet);
                 let scoped = Self::scope_css(&raw, "#ema-root");
                 let tpl = Self::escape_js_template(&scoped);
                 format!("((() => {{ const styleEl = document.createElement('style'); styleEl.textContent = `{}`; document.head.appendChild(styleEl); return null; }})())", tpl)
             }
-            Expr::JsAst { .. } => {
-                // Lifted into clientScripts during build_frontend.
+            Expr::JsAst { program, .. } => {
+                self.client_scripts.push(Self::render_js_program(program));
                 "null".to_string()
             }
             Expr::PhpAst { .. } => "null".to_string(),
@@ -560,6 +804,33 @@ impl WasmBuilder {
                 format!("{}({})", callee_str, args_str.join(", "))
             }
             Expr::UiElement { tag, props, children, span: _ } => {
+                if let Some(first_char) = tag.chars().next() {
+                    if first_char.is_uppercase() {
+                        let mut props_js = "{ ".to_string();
+                        for (i, (p_name, p_expr)) in props.iter().enumerate() {
+                            props_js.push_str(&format!("\"{}\": {}", p_name, self.compile_expr(p_expr)));
+                            if i < props.len() - 1 { props_js.push_str(", "); }
+                        }
+                        props_js.push_str(" }");
+
+                        let mut children_js = "[".to_string();
+                        for (i, child) in children.iter().enumerate() {
+                            children_js.push_str(&self.compile_expr(child));
+                            if i < children.len() - 1 { children_js.push_str(", "); }
+                        }
+                        children_js.push_str("]");
+                        if !children.is_empty() {
+                            if props.is_empty() {
+                                props_js = format!("{{ \"children\": {} }}", children_js);
+                            } else {
+                                props_js = props_js.replace(" }", &format!(", \"children\": {} }}", children_js));
+                            }
+                        }
+
+                        return format!("{}({})", tag, props_js);
+                    }
+                }
+
                 let mut js = format!("((() => {{ const el = document.createElement('{}');", tag);
                 // Component-scoped CSS: css: css{...}
                 if let Some(css_raw) = props.get("css").and_then(|v| match v {
@@ -573,13 +844,29 @@ impl WasmBuilder {
                     js.push_str(&format!(" {{ const styleEl = document.createElement('style'); styleEl.textContent = `{}`; document.head.appendChild(styleEl); }}", tpl));
                 }
                 for (name, val) in props {
+                    if name == "css" { continue; } // handled above
                     if name == "onclick" {
-                        let handler = self.compile_onclick(val);
-                        js.push_str(&format!(" el.onclick = () => {{ {} }};", handler));
-                    } else if name == "css" {
-                        // handled above
+                        js.push_str(&format!(" el.setAttribute('data-ema-click', `{}`);", self.compile_onclick(val)));
+                    } else if name == "oninput" {
+                        js.push_str(&format!(" el.setAttribute('data-ema-oninput', `{}`);", self.compile_onclick(val)));
+                    } else if name == "onchange" {
+                        js.push_str(&format!(" el.setAttribute('data-ema-onchange', `{}`);", self.compile_onclick(val)));
+                    } else if name.starts_with("--") {
+                        if let Expr::Interpolation(inner, _) = val {
+                            if let Expr::Identifier(var_name, _) = inner.as_ref() {
+                                js.push_str(&format!(" el.dataset.emaCssVar = '{}'; EmaApp.bindings.push({{ key: '{}', node: el }});", name, var_name));
+                            } else {
+                                let val_str = self.compile_expr(inner);
+                                js.push_str(&format!(" el.style.setProperty('{}', {});", name, val_str));
+                            }
+                        } else {
+                            let val_str = self.compile_expr(val);
+                            js.push_str(&format!(" el.style.setProperty('{}', {});", name, val_str));
+                        }
                     } else {
                         let val_str = self.compile_expr(val);
+                        // For HTML attributes, we often need literal strings if it's a constant.
+                        // But if it's an identifier, we use its value.
                         js.push_str(&format!(" el.setAttribute('{}', {});", name, val_str));
                     }
                 }
@@ -591,8 +878,6 @@ impl WasmBuilder {
                 js
             }
             Expr::Interpolation(inner, _span) => {
-                // Interpolations become reactive bindings into EmaApp.state when possible.
-                // For identifiers: {{ counter }} -> binding to state['counter']
                 if let Expr::Identifier(name, _) = inner.as_ref() {
                     format!("((() => {{ const n = document.createTextNode(''); EmaApp.bindings.push({{ key: \"{}\", node: n }}); return n; }})())", name)
                 } else {
@@ -600,6 +885,38 @@ impl WasmBuilder {
                     format!("document.createTextNode({})", inner_js)
                 }
             }
+            Expr::Member { object, property, .. } => {
+                let obj_js = self.compile_expr(object);
+                format!("{}.{}", obj_js, property)
+            }
+            Expr::Ternary { condition, then_expr, else_expr, .. } => {
+                let cond = self.compile_expr(condition);
+                let then = self.compile_expr(then_expr);
+                let els = self.compile_expr(else_expr);
+                format!("({} ? {} : {})", cond, then, els)
+            }
+            Expr::StructLiteral { fields, .. } => {
+                let mut s = "{ ".to_string();
+                for (i, (name, val)) in fields.iter().enumerate() {
+                    s.push_str(&format!("\"{}\": {}", name, self.compile_expr(val)));
+                    if i < fields.len() - 1 { s.push_str(", "); }
+                }
+                s.push_str(" }");
+                s
+            }
+            Expr::ClientScript(stmts, _) => {
+                for s in stmts {
+                    let old_js = std::mem::take(&mut self.js_output);
+                    self.compile_js(s, 0);
+                    let compiled = std::mem::take(&mut self.js_output);
+                    self.js_output = old_js;
+                    if !compiled.is_empty() {
+                        self.client_scripts.push(compiled);
+                    }
+                }
+                "null".to_string()
+            }
+            Expr::ServerScript(_, _) => "null".to_string(),
             _ => "\"unsupported_expr\"".to_string(),
         }
     }
@@ -665,30 +982,30 @@ impl WasmBuilder {
                         // Convert inline events into safe EMA data-* handlers.
                         // Example: onclick="inc(counter)"
                         if k.to_ascii_lowercase() == "onclick" {
-                            out.push_str(" data-ema-onclick=\"");
+                            out.push_str(" data-ema-click=\"");
                             let v = match &a.value {
-                                HtmlAttrValue::Static(s) => s,
-                                _ => "",
+                                HtmlAttrValue::Static(s) => s.clone(),
+                                _ => "".to_string(),
                             };
-                            out.push_str(&Self::escape_html_attr(v));
+                            out.push_str(&Self::escape_html_attr(&v));
                             out.push('"');
                         }
                         if k.to_ascii_lowercase() == "oninput" {
                             out.push_str(" data-ema-oninput=\"");
                             let v = match &a.value {
-                                HtmlAttrValue::Static(s) => s,
-                                _ => "",
+                                HtmlAttrValue::Static(s) => s.clone(),
+                                _ => "".to_string(),
                             };
-                            out.push_str(&Self::escape_html_attr(v));
+                            out.push_str(&Self::escape_html_attr(&v));
                             out.push('"');
                         }
                         if k.to_ascii_lowercase() == "onchange" {
                             out.push_str(" data-ema-onchange=\"");
                             let v = match &a.value {
-                                HtmlAttrValue::Static(s) => s,
-                                _ => "",
+                                HtmlAttrValue::Static(s) => s.clone(),
+                                _ => "".to_string(),
                             };
-                            out.push_str(&Self::escape_html_attr(v));
+                            out.push_str(&Self::escape_html_attr(&v));
                             out.push('"');
                         }
                         continue;
@@ -810,6 +1127,10 @@ impl WasmBuilder {
                 };
                 Some(format!("({} {} {})", l, operator, r))
             }
+            Expr::Member { object, property, .. } => {
+                let obj_js = Self::template_expr_to_js(object)?;
+                Some(format!("{}.{}", obj_js, property))
+            }
             _ => None,
         }
     }
@@ -820,21 +1141,39 @@ impl WasmBuilder {
         format!("__ema_expr_{}", hasher.finish())
     }
 
-    fn render_css_stylesheet(sheet: &CssStylesheet) -> String {
+    fn render_css_stylesheet(&mut self, sheet: &CssStylesheet) -> String {
         let mut out = String::new();
-        for r in &sheet.rules {
-            if r.selectors.is_empty() {
-                continue;
+        for node in &sheet.nodes {
+            match node {
+                crate::ast::CssNode::Rule(r) => {
+                    if r.selectors.is_empty() {
+                        continue;
+                    }
+                    out.push_str(&r.selectors.join(", "));
+                    out.push_str(" {");
+                    for (k, v) in &r.declarations {
+                        out.push_str(k);
+                        out.push(':');
+                        out.push_str(v);
+                        out.push(';');
+                    }
+                    out.push_str("}\n");
+                }
+                crate::ast::CssNode::AtRule { name, params, .. } => {
+                    if name == "tailwind" {
+                        self.tailwind_needed = true;
+                    } else if name == "bootstrap" {
+                        self.bootstrap_needed = true;
+                    }
+                    out.push('@');
+                    out.push_str(name);
+                    if !params.is_empty() {
+                        out.push(' ');
+                        out.push_str(params);
+                    }
+                    out.push_str(";\n");
+                }
             }
-            out.push_str(&r.selectors.join(", "));
-            out.push_str(" {");
-            for (k, v) in &r.declarations {
-                out.push_str(k);
-                out.push(':');
-                out.push_str(v);
-                out.push(';');
-            }
-            out.push_str("}\n");
         }
         out
     }
@@ -906,14 +1245,33 @@ impl WasmBuilder {
                 let upd_s = update.as_ref().map(Self::render_js_expr).unwrap_or_default();
                 format!("for ({}; {}; {}) {}", init_s, cond_s, upd_s, Self::render_js_stmt(body))
             }
-            JsStmt::FunctionDecl { name, params, body, .. } => {
-                format!("function {}({}) {}", name, Self::render_js_params(params), Self::render_js_stmt(body))
+            JsStmt::ClassDecl { name, extends, body, .. } => {
+                let ext_str = if let Some(e) = extends { format!(" extends {}", e) } else { "".to_string() };
+                let mut out = format!("class {}{} {{\n", name, ext_str);
+                for s in body {
+                    if let JsStmt::FunctionDecl { name, params, body, is_async, .. } = s {
+                        let prefix = if *is_async { "async " } else { "" };
+                        out.push_str(&format!("  {}{}({}) {}\n", prefix, name, Self::render_js_params(params), Self::render_js_stmt(body)));
+                    } else {
+                        out.push_str(&Self::render_js_stmt(s));
+                        out.push('\n');
+                    }
+                }
+                out.push_str("}");
+                out
+            }
+            JsStmt::FunctionDecl { name, params, body, is_async, .. } => {
+                let prefix = if *is_async { "async " } else { "" };
+                format!("{}function {}({}) {}", prefix, name, Self::render_js_params(params), Self::render_js_stmt(body))
             }
             JsStmt::TryCatch { try_block, catch_name, catch_block, .. } => {
                 format!("try {} catch ({}) {}", Self::render_js_stmt(try_block), catch_name, Self::render_js_stmt(catch_block))
             }
             JsStmt::Throw(e, _) => {
                 format!("throw {};", Self::render_js_expr(e))
+            }
+            JsStmt::ClassDecl { .. } | JsStmt::Switch { .. } | JsStmt::Break(_) | JsStmt::Continue(_) => {
+                "/* not supported in WASM yet */".to_string()
             }
         }
     }
@@ -947,8 +1305,12 @@ impl WasmBuilder {
                 let p: Vec<String> = items.iter().map(Self::render_js_expr).collect();
                 format!("[{}]", p.join(", "))
             }
-            JsExpr::ArrowFn { params, body, .. } => {
-                format!("(({}) => {})", Self::render_js_params(params), Self::render_js_stmt(body))
+            JsExpr::ArrowFn { params, body, is_async, .. } => {
+                let prefix = if *is_async { "async " } else { "" };
+                format!("({}({}) => {})", prefix, Self::render_js_params(params), Self::render_js_stmt(body))
+            }
+            JsExpr::Await { expr, .. } => {
+                format!("(await {})", Self::render_js_expr(expr))
             }
             JsExpr::Spread { expr, .. } => format!("...{}", Self::render_js_expr(expr)),
             JsExpr::TemplateLit { parts, .. } => {
@@ -966,6 +1328,16 @@ impl WasmBuilder {
                 }
                 out.push('`');
                 out
+            }
+            JsExpr::Update { op, is_prefix, expr, .. } => {
+                if *is_prefix {
+                    format!("{}{}", op, Self::render_js_expr(expr))
+                } else {
+                    format!("{}{}", Self::render_js_expr(expr), op)
+                }
+            }
+            JsExpr::New { .. } | JsExpr::This(_) | JsExpr::Super(_) => {
+                "/* not supported in WASM yet */".to_string()
             }
         }
     }
@@ -1019,7 +1391,7 @@ impl WasmBuilder {
         out.join(", ")
     }
 
-    fn compile_onclick(&self, expr: &Expr) -> String {
+    fn compile_onclick(&mut self, expr: &Expr) -> String {
         match expr {
             // Treat string literal as raw JS (not quoted)
             Expr::StringLit(s, _) => {
@@ -1059,6 +1431,9 @@ impl WasmBuilder {
                 format!("{};", e)
             }
             // Otherwise compile as expression and evaluate
+            Expr::Await(inner, _) => {
+                format!("await {};", self.compile_expr(inner))
+            }
             _ => {
                 let e = self.compile_expr(expr);
                 format!("{};", e)
@@ -1099,10 +1474,6 @@ impl WasmBuilder {
     }
 
     fn scope_css(raw: &str, scope: &str) -> String {
-        // Very small CSS scoper for MVP.
-        // - Prefixes selectors with `scope` to prevent leaking styles globally.
-        // - Leaves truly-global selectors (`html`, `body`, `:root`) untouched.
-        // - Tries to preserve @media blocks by scoping their inner rules.
         let s = raw.trim();
         Self::scope_css_inner(s, scope)
     }
@@ -1122,15 +1493,17 @@ impl WasmBuilder {
                 break;
             }
 
-            // @media / @supports passthrough with recursive scoping
+            // @media / @supports / @keyframes passthrough with recursive scoping
             if bytes[i] == b'@' {
+                let rule_start = i;
                 // read at-rule header until '{'
                 while i < bytes.len() && bytes[i] != b'{' {
-                    out.push(bytes[i] as char);
                     i += 1;
                 }
+                let header = input[rule_start..i].trim();
+                out.push_str(header);
+
                 if i >= bytes.len() {
-                    // no body
                     break;
                 }
                 // consume '{'
@@ -1145,32 +1518,29 @@ impl WasmBuilder {
                     let c = bytes[i];
                     if let Some(q) = in_str {
                         if c == b'\\' {
-                            i += 2;
+                            i += 1;
+                            if i < bytes.len() { i += 1; }
                             continue;
                         }
-                        if c == q {
-                            in_str = None;
-                        }
+                        if c == q { in_str = None; }
                         i += 1;
                         continue;
                     }
-                    if c == b'"' || c == b'\'' {
-                        in_str = Some(c);
-                        i += 1;
-                        continue;
-                    }
-                    if c == b'{' {
-                        depth += 1;
-                    } else if c == b'}' {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                    }
+                    if c == b'"' || c == b'\'' { in_str = Some(c); i += 1; continue; }
+                    if c == b'{' { depth += 1; }
+                    else if c == b'}' { depth -= 1; if depth == 0 { break; } }
                     i += 1;
                 }
-                let body = &input[body_start..i];
-                out.push_str(&Self::scope_css_inner(body, scope));
+                let i_clamped = i.min(bytes.len());
+                let body = &input[body_start..i_clamped];
+                
+                // If it's a keyframes rule, we scope the rule names inside as 0%, 100% etc (i.e. don't prepend scope)
+                if header.to_ascii_lowercase().contains("keyframes") {
+                   out.push_str(body); // Keyframes don't need selector scoping
+                } else {
+                   out.push_str(&Self::scope_css_inner(body, scope));
+                }
+
                 if i < bytes.len() && bytes[i] == b'}' {
                     out.push('}');
                     i += 1;
@@ -1206,31 +1576,21 @@ impl WasmBuilder {
                 let c = bytes[i];
                 if let Some(q) = in_str {
                     if c == b'\\' {
-                        i += 2;
+                        i += 1;
+                        if i < bytes.len() { i += 1; }
                         continue;
                     }
-                    if c == q {
-                        in_str = None;
-                    }
+                    if c == q { in_str = None; }
                     i += 1;
                     continue;
                 }
-                if c == b'"' || c == b'\'' {
-                    in_str = Some(c);
-                    i += 1;
-                    continue;
-                }
-                if c == b'{' {
-                    depth += 1;
-                } else if c == b'}' {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
+                if c == b'"' || c == b'\'' { in_str = Some(c); i += 1; continue; }
+                if c == b'{' { depth += 1; }
+                else if c == b'}' { depth -= 1; if depth == 0 { break; } }
                 i += 1;
             }
-            out.push_str(&input[decl_start..i]);
+            let i_clamped = i.min(bytes.len());
+            out.push_str(&input[decl_start..i_clamped]);
             if i < bytes.len() && bytes[i] == b'}' {
                 out.push('}');
                 i += 1;
@@ -1242,7 +1602,7 @@ impl WasmBuilder {
 
     fn scope_selector(selector: &str, scope: &str) -> String {
         if selector.is_empty() {
-            return selector.to_string();
+            return scope.to_string();
         }
 
         let sel = selector.trim();

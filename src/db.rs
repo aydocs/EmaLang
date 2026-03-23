@@ -1,12 +1,14 @@
-use rusqlite::Connection;
+use sqlx::AnyPool;
 use std::fs;
 use std::path::Path;
+use sqlx::Row;
 
-pub fn apply_migrations(conn: &Connection, dir: &str) -> Result<usize, String> {
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS ema_migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT CURRENT_TIMESTAMP)",
-        [],
+pub async fn apply_migrations(pool: &AnyPool, dir: &str) -> Result<usize, String> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ema_migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT CURRENT_TIMESTAMP)"
     )
+    .execute(pool)
+    .await
     .map_err(|e| e.to_string())?;
 
     let path = Path::new(dir);
@@ -28,18 +30,23 @@ pub fn apply_migrations(conn: &Connection, dir: &str) -> Result<usize, String> {
             continue;
         }
 
-        let already: Result<String, _> = conn.query_row(
-            "SELECT name FROM ema_migrations WHERE name = ?1 LIMIT 1",
-            [&name],
-            |row| row.get(0),
-        );
-        if already.is_ok() {
+        let already: Result<Option<sqlx::any::AnyRow>, _> = sqlx::query(
+            "SELECT name FROM ema_migrations WHERE name = $1 LIMIT 1"
+        )
+        .bind(&name)
+        .fetch_optional(pool)
+        .await;
+
+        if let Ok(Some(_)) = already {
             continue;
         }
 
         let sql = fs::read_to_string(e.path()).map_err(|er| er.to_string())?;
-        conn.execute_batch(&sql).map_err(|er| format!("Migration {} failed: {}", name, er))?;
-        conn.execute("INSERT INTO ema_migrations (name) VALUES (?1)", [&name])
+        sqlx::query(&sql).execute(pool).await.map_err(|er| format!("Migration {} failed: {}", name, er))?;
+        sqlx::query("INSERT INTO ema_migrations (name) VALUES ($1)")
+            .bind(&name)
+            .execute(pool)
+            .await
             .map_err(|er| er.to_string())?;
         applied += 1;
     }

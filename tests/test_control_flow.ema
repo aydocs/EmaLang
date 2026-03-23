@@ -1,0 +1,13 @@
+fn test() {
+    var a: int = 5;
+    if a {
+        print a;
+    } else {
+        print 0;
+    }
+}
+
+test();
+
+
+test();

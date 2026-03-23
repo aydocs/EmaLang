@@ -2,8 +2,10 @@
 pub enum Token {
     Var,
     Print,
+    Test,
     AtServer,
     AtClient,
+    AtStrict,
     Model,     // Native DB Struct
     StrType,   // Native String Type
     IntType,   // Native Integer Type
@@ -14,12 +16,14 @@ pub enum Token {
     While,
     Fn,        // Function Keyword
     Return,    // Return Value Keyword
+    Wait,
+    Component, // Reusable UI component keyword
     Html,      // embedded block keyword
     Css,       // embedded block keyword
     Js,        // embedded block keyword
     Php,       // embedded block keyword
     Plus, Minus, Star, Slash,
-    EqEq, BangEq, Less, LessEq, Greater, GreaterEq,
+    EqEq, BangEq, Less, LessEq, Greater, GreaterEq, Question,
     Identifier(String),
     StringLit(String),
     IntLit(i64),
@@ -35,12 +39,26 @@ pub enum Token {
     Comma,     // ,
     LBrace,
     RBrace,
+    LBracket,  // [
+    RBracket,  // ]
+    Ampersand, // &
+    Pipe,      // |
+    Caret,     // ^
+    Percent,   // %
+    Tilde,     // ~
+    Bang,      // !
     LParen,    // (
     SlashGreater,    // />
     LDoubleBrace,    // {{
     RDoubleBrace,    // }}
     State,           // state keyword
     RParen,    // )
+    Dot,       // .
+    Async,           // async keyword
+    Await,           // await keyword
+    Import,          // import keyword
+    From,            // from keyword
+    AtIdentifier(String), // e.g. @media
     EOF,
 }
 
@@ -113,7 +131,7 @@ impl Lexer {
     fn read_identifier_or_keyword(&mut self) -> Token {
         let mut result = String::new();
         while let Some(c) = self.current_char() {
-            if c.is_alphanumeric() || c == '_' || c == '-' {
+            if c.is_alphanumeric() || c == '_' || c == '-' || c == '#' || c == '%' {
                 result.push(c);
                 self.advance();
             } else {
@@ -124,21 +142,27 @@ impl Lexer {
         match result.as_str() {
             "var" => Token::Var,
             "print" => Token::Print,
+            "test" => Token::Test,
             "model" => Token::Model,
-            "str" => Token::StrType,
-            "int" => Token::IntType,
-            "float" => Token::FloatType,
-            "bool" => Token::BoolType,
+            "str" | "Str" => Token::StrType,
+            "int" | "Int" => Token::IntType,
+            "float" | "Float" => Token::FloatType,
+            "bool" | "Bool" => Token::BoolType,
             "if" => Token::If,
             "else" => Token::Else,
             "while" => Token::While,
             "fn" => Token::Fn,
             "return" => Token::Return,
+            "component" => Token::Component,
             "state" => Token::State,
             "html" => Token::Html,
             "css" => Token::Css,
             "js" => Token::Js,
             "php" => Token::Php,
+            "async" => Token::Async,
+            "await" => Token::Await,
+            "import" => Token::Import,
+            "from" => Token::From,
             _ => Token::Identifier(result),
         }
     }
@@ -158,7 +182,8 @@ impl Lexer {
         match result.as_str() {
             "server" => Token::AtServer,
             "client" => Token::AtClient,
-            _ => panic!("Unknown decorator: @{}", result),
+            "strict" => Token::AtStrict,
+            _ => Token::AtIdentifier(result),
         }
     }
 
@@ -166,6 +191,24 @@ impl Lexer {
         self.advance(); // skip opening quote
         let mut result = String::new();
         while let Some(c) = self.current_char() {
+            if c == '\\' {
+                self.advance();
+                if let Some(next) = self.current_char() {
+                    match next {
+                        'n' => result.push('\n'),
+                        'r' => result.push('\r'),
+                        't' => result.push('\t'),
+                        '\\' => result.push('\\'),
+                        '"' => result.push('"'),
+                        _ => {
+                            result.push('\\');
+                            result.push(next);
+                        }
+                    }
+                    self.advance();
+                }
+                continue;
+            }
             if c == '"' {
                 self.advance(); // skip closing quote
                 break;
@@ -274,6 +317,26 @@ impl Lexer {
             }
         }
 
+        out
+    }
+
+    fn read_php_tag_block(&mut self) -> String {
+        // Current char is '<', next is '?', then 'p', 'h', 'p'
+        // Skip '<?php'
+        for _ in 0..5 {
+            self.advance();
+        }
+        
+        let mut out = String::new();
+        while let Some(c) = self.current_char() {
+            if c == '?' && self.peek_char(1) == Some('>') {
+                self.advance(); // consume '?'
+                self.advance(); // consume '>'
+                break;
+            }
+            out.push(c);
+            self.advance();
+        }
         out
     }
 
@@ -415,7 +478,33 @@ impl Lexer {
                 return TokenData { token, line: start_line, col: start_col };
             }
             let token = match c {
-                '@' => self.read_decorator(),
+                '@' => {
+                    let decorator_tok = self.read_decorator();
+                    // Support shorthand: @client { ... } as a raw JS block
+                    if decorator_tok == Token::AtClient || decorator_tok == Token::AtServer {
+                        let save_pos = self.position;
+                        let save_line = self.line;
+                        let save_col = self.col;
+                        
+                        self.skip_whitespace_no_newline();
+                        if self.current_char() == Some('{') {
+                            let raw = self.read_raw_brace_block();
+                            match decorator_tok {
+                                Token::AtClient => Token::JsBlock(raw),
+                                Token::AtServer => Token::PhpBlock(raw),
+                                _ => unreachable!(),
+                            }
+                        } else {
+                            // Backtrack or just return the decorator and let parser handle the rest
+                            self.position = save_pos;
+                            self.line = save_line;
+                            self.col = save_col;
+                            decorator_tok
+                        }
+                    } else {
+                        decorator_tok
+                    }
+                }
                 '"' => self.read_string(),
                 '=' => {
                     self.advance();
@@ -432,16 +521,24 @@ impl Lexer {
                         self.advance();
                         Token::BangEq
                     } else {
-                        panic!("Line {}:{}: Beklenmeyen karakter: !", self.line, self.col);
+                        Token::Bang
                     }
                 }
                 '<' => {
-                    self.advance();
-                    if let Some('=') = self.current_char() {
-                        self.advance();
-                        Token::LessEq
+                    if self.peek_char(1) == Some('?') 
+                        && self.peek_char(2) == Some('p')
+                        && self.peek_char(3) == Some('h')
+                        && self.peek_char(4) == Some('p') 
+                    {
+                        Token::PhpBlock(self.read_php_tag_block())
                     } else {
-                        Token::Less
+                        self.advance();
+                        if let Some('=') = self.current_char() {
+                            self.advance();
+                            Token::LessEq
+                        } else {
+                            Token::Less
+                        }
                     }
                 }
                 '>' => {
@@ -522,11 +619,51 @@ impl Lexer {
                     self.advance();
                     Token::RParen
                 }
+                '[' => {
+                    self.advance();
+                    Token::LBracket
+                }
+                ']' => {
+                    self.advance();
+                    Token::RBracket
+                }
+                '&' => {
+                    self.advance();
+                    Token::Ampersand
+                }
+                '|' => {
+                    self.advance();
+                    Token::Pipe
+                }
+                '^' => {
+                    self.advance();
+                    Token::Caret
+                }
+                '%' => {
+                    self.advance();
+                    Token::Percent
+                }
+                '~' => {
+                    self.advance();
+                    Token::Tilde
+                }
+                '\'' => {
+                    // Treat single-quoted exactly like double-quoted for simplicity
+                    self.read_string()
+                }
                 ',' => {
                     self.advance();
                     Token::Comma
                 }
-                _ => panic!("Line {}:{}: Beklenmeyen karakter: {}", self.line, self.col, c),
+                '.' => {
+                    self.advance();
+                    Token::Dot
+                }
+                '?' => {
+                    self.advance();
+                    Token::Question
+                }
+                _ => panic!("Line {}:{}: Unexpected character: {}", self.line, self.col, c),
             };
             return TokenData { token, line: start_line, col: start_col };
         }

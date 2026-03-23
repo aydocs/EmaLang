@@ -1,7 +1,21 @@
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Span {
     pub line: usize,
     pub col: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub enum EmaType {
+    Int,
+    Float,
+    Str,
+    Bool,
+    Void,
+    Function { params: Vec<EmaType>, return_type: Box<EmaType> },
+    Component { name: String, props: Vec<(String, EmaType)> },
+    Model { name: String },
+    Ui,
+    Json,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,8 +77,14 @@ pub enum HtmlAttrValue {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum CssNode {
+    Rule(CssRule),
+    AtRule { name: String, params: String, span: Span },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct CssStylesheet {
-    pub rules: Vec<CssRule>,
+    pub nodes: Vec<CssNode>,
     pub span: Span,
 }
 
@@ -126,9 +146,23 @@ pub enum JsStmt {
         body: Box<JsStmt>,
         span: Span,
     },
-    FunctionDecl { name: String, params: Vec<JsParam>, body: Box<JsStmt>, span: Span },
+    FunctionDecl { name: String, params: Vec<JsParam>, body: Box<JsStmt>, is_async: bool, span: Span },
     TryCatch { try_block: Box<JsStmt>, catch_name: String, catch_block: Box<JsStmt>, span: Span },
     Throw(JsExpr, Span),
+    ClassDecl { 
+        name: String, 
+        extends: Option<String>, 
+        body: Vec<JsStmt>, 
+        span: Span 
+    },
+    Switch { 
+        discriminant: JsExpr, 
+        cases: Vec<(JsExpr, Vec<JsStmt>)>, 
+        default: Option<Vec<JsStmt>>, 
+        span: Span 
+    },
+    Break(Span),
+    Continue(Span),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,9 +186,14 @@ pub enum JsExpr {
     Conditional { condition: Box<JsExpr>, then_expr: Box<JsExpr>, else_expr: Box<JsExpr>, span: Span },
     ObjectLit { props: Vec<(String, JsExpr)>, span: Span },
     ArrayLit { items: Vec<JsExpr>, span: Span },
-    ArrowFn { params: Vec<JsParam>, body: Box<JsStmt>, span: Span },
+    ArrowFn { params: Vec<JsParam>, body: Box<JsStmt>, is_async: bool, span: Span },
     Spread { expr: Box<JsExpr>, span: Span },
     TemplateLit { parts: Vec<JsTemplatePart>, span: Span },
+    Await { expr: Box<JsExpr>, span: Span },
+    Update { op: String, is_prefix: bool, expr: Box<JsExpr>, span: Span },
+    New { callee: Box<JsExpr>, args: Vec<JsExpr>, span: Span },
+    This(Span),
+    Super(Span),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -188,9 +227,15 @@ pub enum PhpExpr {
     Float(f64, Span),
     Bool(bool, Span),
     Null(Span),
+    ArrowFn { params: Vec<String>, body: Box<PhpExpr>, span: Span },
+    Match { discriminant: Box<PhpExpr>, cases: Vec<(Box<PhpExpr>, Box<PhpExpr>)>, default: Option<Box<PhpExpr>>, span: Span },
+    Member { object: Box<PhpExpr>, property: String, span: Span },
+    NullsafeMember { object: Box<PhpExpr>, property: String, span: Span },
+    Coalesce { left: Box<PhpExpr>, right: Box<PhpExpr>, span: Span },
+    CoalesceAssign { name: String, value: Box<PhpExpr>, span: Span },
     Call { name: String, args: Vec<PhpExpr>, span: Span },
     Binary { left: Box<PhpExpr>, op: String, right: Box<PhpExpr>, span: Span },
-    ArrayLit { items: Vec<PhpExpr>, span: Span },
+    ArrayLit { items: Vec<(Option<PhpExpr>, PhpExpr)>, span: Span },
     ObjectLit { props: Vec<(String, PhpExpr)>, span: Span },
     Index { target: Box<PhpExpr>, index: Box<PhpExpr>, span: Span },
 }
@@ -247,6 +292,24 @@ pub enum Expr {
         span: Span,
     },
     Interpolation(Box<Expr>, Span),
+    Member {
+        object: Box<Expr>,
+        property: String,
+        span: Span,
+    },
+    StructLiteral {
+        fields: Vec<(String, Expr)>,
+        span: Span,
+    },
+    Ternary {
+        condition: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+        span: Span,
+    },
+    Await(Box<Expr>, Span),
+    ClientScript(Vec<Stmt>, Span),
+    ServerScript(Vec<Stmt>, Span),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -258,12 +321,19 @@ pub struct FieldDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
-    VarDecl { name: String, value: Expr, span: Span },
+    VarDecl { name: String, type_ann: Option<Type>, value: Expr, span: Span },
+    AssignStmt { name: String, value: Expr, span: Span },
     PrintStmt(Expr, Span),
     ExprStmt(Expr, Span),
-    StateDecl { name: String, value: Expr, span: Span },
+    StateDecl { name: String, type_ann: Option<Type>, value: Expr, span: Span },
     ServerBlock(Vec<Stmt>, Span),
     ClientBlock(Vec<Stmt>, Span),
+    ComponentDecl {
+        name: String,
+        props: Vec<(String, Type)>,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     ModelDecl { name: String, fields: Vec<FieldDecl>, span: Span },
     IfStmt {
         condition: Expr,
@@ -278,11 +348,15 @@ pub enum Stmt {
     },
     FnDecl {
         name: String,
-        params: Vec<String>,
+        params: Vec<(String, Option<Type>)>,
+        return_type: Option<Type>,
         body: Vec<Stmt>,
+        is_async: bool,
         span: Span,
     },
     ReturnStmt(Option<Expr>, Span),
+    ImportStmt { imports: Vec<String>, source: String, span: Span },
+    Test { name: String, body: Vec<Stmt>, span: Span },
 }
 
 use std::collections::HashMap;
@@ -295,7 +369,10 @@ impl Expr {
             Expr::EmbeddedBlock { span, .. } => span.clone(),
             Expr::HtmlAst { span, .. } | Expr::CssAst { span, .. } | Expr::JsAst { span, .. } | Expr::PhpAst { span, .. } => span.clone(),
             Expr::Call { span, .. } | Expr::NamespaceCall { span, .. } |
-            Expr::Binary { span, .. } | Expr::UiElement { span, .. } => span.clone(),
+            Expr::Binary { span, .. } | Expr::UiElement { span, .. } |
+            Expr::Member { span, .. } | Expr::StructLiteral { span, .. } |
+            Expr::Ternary { span, .. } => span.clone(),
+            Expr::Await(_, span) | Expr::ClientScript(_, span) | Expr::ServerScript(_, span) => span.clone(),
         }
     }
 }
@@ -304,15 +381,19 @@ impl Stmt {
     pub fn span(&self) -> Span {
         match self {
             Stmt::VarDecl { span, .. } | Stmt::PrintStmt(_, span) | Stmt::ExprStmt(_, span) |
+            Stmt::AssignStmt { span, .. } |
             Stmt::StateDecl { span, .. } | Stmt::ServerBlock(_, span) | Stmt::ClientBlock(_, span) |
+            Stmt::ComponentDecl { span, .. } |
             Stmt::ModelDecl { span, .. } | Stmt::IfStmt { span, .. } | Stmt::WhileStmt { span, .. } |
-            Stmt::FnDecl { span, .. } | Stmt::ReturnStmt(_, span) => span.clone(),
+            Stmt::FnDecl { span, .. } | Stmt::ReturnStmt(_, span) |
+            Stmt::ImportStmt { span, .. } | Stmt::Test { span, .. } => span.clone(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub is_strict: bool,
     pub statements: Vec<Stmt>,
 }
 

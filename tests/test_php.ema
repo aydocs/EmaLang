@@ -1,0 +1,19 @@
+@server php {
+    $fn = fn($x) => $x * 2;
+    echo $fn(5);
+    
+    $val = 200;
+    $status = match($val) {
+        200 => "OK",
+        404 => "Not Found",
+        default => "Unknown"
+    };
+    echo $status;
+    
+    $config = ["theme" => "dark"];
+    echo $config["theme"];
+    
+    $obj = { "settings": { "not_found": null } };
+    echo $obj->settings->not_found ?? "Default Value";
+    echo $obj?->non_existent?->prop ?? "Nullsafe Default";
+}
