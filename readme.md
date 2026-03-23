@@ -79,6 +79,11 @@ model Product { id: int, name: str, price: float }
 
 ---
 
+## ⚠️ PROJECT STATUS: UNDER ACTIVE DEVELOPMENT
+EMA is an **expressive programming language** currently in its **active alpha/beta phase**. While V1.0 provides a powerful and robust core, users should expect ongoing updates, experimental features, and potential bugs. We invite the global developer community to explore, test, and provide feedback as we move toward full-scale production stability.
+
+---
+
 <div align="center">
   <strong>Developed with 🚀 by aydocs.</strong>
   <br />
